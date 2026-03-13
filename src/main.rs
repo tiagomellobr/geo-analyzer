@@ -17,6 +17,10 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
 use tower_http::trace::TraceLayer;
+use tower_sessions::{
+    cookie::SameSite, Expiry, SessionManagerLayer,
+};
+use tower_sessions_sqlx_store::SqliteStore;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Evento de progresso enviado por SSE
@@ -35,8 +39,6 @@ pub struct AppState {
     pub tmpl: Environment<'static>,
     pub tx: broadcast::Sender<StatusEvent>,
     pub llm_client: analyzer::llm::LlmClient,
-    /// Sessões ativas: session_id → dados do usuário
-    pub sessions: std::sync::Mutex<std::collections::HashMap<String, models::SessionData>>,
 }
 
 #[tokio::main]
@@ -72,12 +74,34 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let state = Arc::new(AppState {
-        pool,
+        pool: pool.clone(),
         tmpl,
         tx,
         llm_client,
-        sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
+
+    // Sessão persistente no SQLite (tower-sessions)
+    let session_store = SqliteStore::new(pool);
+    session_store.migrate().await?;
+
+    // Limpar sessões expiradas a cada 1 h em background
+    let cleanup_store = session_store.clone();
+    tokio::spawn(async move {
+        use tower_sessions::session_store::ExpiredDeletion;
+        let _ = cleanup_store
+            .continuously_delete_expired(tokio::time::Duration::from_secs(3600))
+            .await;
+    });
+
+    let secure_cookie = std::env::var("SESSION_SECURE")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
+    let session_layer = SessionManagerLayer::new(session_store)
+        .with_secure(secure_cookie)
+        .with_same_site(SameSite::Strict)
+        .with_http_only(true)
+        .with_expiry(Expiry::OnInactivity(time::Duration::days(7)));
 
     // Rotas
     let app = Router::new()
@@ -94,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/jobs/:job_id/pages/:page_id", get(handlers::page_detail))
         .route("/jobs/:job_id/export", get(handlers::export_results))
         .route("/jobs/:job_id/delete", post(handlers::delete_job))
+        .layer(session_layer)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

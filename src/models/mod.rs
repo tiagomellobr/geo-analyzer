@@ -2,8 +2,8 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Dados da sessão autenticada (armazenados em memória)
-#[derive(Debug, Clone, Serialize)]
+/// Dados da sessão autenticada (persistidos no SQLite via tower-sessions)
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionData {
     pub user_id: String,
     pub email: String,

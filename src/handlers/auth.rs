@@ -7,15 +7,10 @@ use axum::{
     extract::State,
     response::{Html, IntoResponse, Redirect},
 };
-use axum_extra::extract::{
-    cookie::{Cookie, SameSite},
-    CookieJar,
-};
 use axum::Form;
 use serde::Deserialize;
 use std::sync::Arc;
-use time::Duration;
-use uuid::Uuid;
+use tower_sessions::Session;
 
 use crate::{
     db,
@@ -23,34 +18,23 @@ use crate::{
     AppState,
 };
 
-const SESSION_COOKIE_NAME: &str = "geo_session";
+const USER_ID_KEY: &str = "user_id";
+const EMAIL_KEY: &str = "email";
 
-/// Retorna os dados da sessão a partir do cookie, se existir e for válida.
-pub fn get_session(jar: &CookieJar, state: &AppState) -> Option<SessionData> {
-    let session_id = jar.get(SESSION_COOKIE_NAME)?.value().to_string();
-    state.sessions.lock().unwrap().get(&session_id).cloned()
-}
-
-fn build_session_cookie(session_id: String) -> Cookie<'static> {
-    let secure = std::env::var("SESSION_SECURE")
-        .map(|v| v == "true")
-        .unwrap_or(false);
-    let mut c = Cookie::new(SESSION_COOKIE_NAME, session_id);
-    c.set_http_only(true);
-    c.set_same_site(SameSite::Strict);
-    c.set_path("/");
-    c.set_max_age(Duration::days(7));
-    c.set_secure(secure);
-    c
+/// Retorna os dados da sessão autenticada, se existir.
+pub async fn get_session_data(session: &Session) -> Option<SessionData> {
+    let user_id = session.get::<String>(USER_ID_KEY).await.ok()??;
+    let email   = session.get::<String>(EMAIL_KEY).await.ok()??;
+    Some(SessionData { user_id, email })
 }
 
 // ─── GET /register ──────────────────────────────────────────────────────────
 
 pub async fn register_page(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    session: Session,
 ) -> impl IntoResponse {
-    if get_session(&jar, &state).is_some() {
+    if get_session_data(&session).await.is_some() {
         return Redirect::to("/").into_response();
     }
     let html = state
@@ -72,7 +56,7 @@ pub struct RegisterForm {
 
 pub async fn register(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    session: Session,
     Form(form): Form<RegisterForm>,
 ) -> impl IntoResponse {
     fn render_error(state: &AppState, msg: &str) -> axum::response::Response {
@@ -137,30 +121,27 @@ pub async fn register(
         return render_error(&state, "Erro ao criar conta. Tente novamente.");
     }
 
-    // Criar sessão e redirecionar
-    let session_id = Uuid::new_v4().to_string();
-    {
-        let mut sessions = state.sessions.lock().unwrap();
-        sessions.insert(
-            session_id.clone(),
-            SessionData {
-                user_id: user.id.clone(),
-                email: user.email.clone(),
-            },
-        );
+    // Persistir sessão e redirecionar
+    if let Err(e) = session.insert(USER_ID_KEY, &user.id).await {
+        tracing::error!("register: session insert user_id error: {e}");
+        return render_error(&state, "Erro interno. Tente novamente.");
+    }
+    if let Err(e) = session.insert(EMAIL_KEY, &user.email).await {
+        tracing::error!("register: session insert email error: {e}");
+        return render_error(&state, "Erro interno. Tente novamente.");
     }
 
     tracing::info!("register: novo usuário criado: {}", email);
-    (jar.add(build_session_cookie(session_id)), Redirect::to("/")).into_response()
+    Redirect::to("/").into_response()
 }
 
 // ─── GET /login ─────────────────────────────────────────────────────────────
 
 pub async fn login_page(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    session: Session,
 ) -> impl IntoResponse {
-    if get_session(&jar, &state).is_some() {
+    if get_session_data(&session).await.is_some() {
         return Redirect::to("/").into_response();
     }
     let html = state
@@ -183,7 +164,7 @@ pub struct LoginForm {
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
+    session: Session,
     Form(form): Form<LoginForm>,
 ) -> impl IntoResponse {
     let email = form.email.trim().to_lowercase();
@@ -234,42 +215,26 @@ pub async fn login(
         return render_error(&state, &email, &next, "E-mail ou senha incorretos.");
     }
 
-    // Criar sessão e redirecionar
-    let session_id = Uuid::new_v4().to_string();
-    {
-        let mut sessions = state.sessions.lock().unwrap();
-        sessions.insert(
-            session_id.clone(),
-            SessionData {
-                user_id: user.id.clone(),
-                email: user.email.clone(),
-            },
-        );
+    // Persistir sessão
+    if let Err(e) = session.insert(USER_ID_KEY, &user.id).await {
+        tracing::error!("login: session insert user_id error: {e}");
+        return render_error(&state, &email, &next, "Erro interno. Tente novamente.");
+    }
+    if let Err(e) = session.insert(EMAIL_KEY, &user.email).await {
+        tracing::error!("login: session insert email error: {e}");
+        return render_error(&state, &email, &next, "Erro interno. Tente novamente.");
     }
 
     tracing::info!("login: usuário autenticado: {}", email);
-    (jar.add(build_session_cookie(session_id)), Redirect::to(&next)).into_response()
+    Redirect::to(&next).into_response()
 }
 
 // ─── POST /logout ────────────────────────────────────────────────────────────
 
-pub async fn logout(
-    State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-) -> impl IntoResponse {
-    // Remover sessão do store em memória
-    if let Some(cookie) = jar.get(SESSION_COOKIE_NAME) {
-        let session_id = cookie.value().to_string();
-        state.sessions.lock().unwrap().remove(&session_id);
-        tracing::info!("logout: sessão {} encerrada", session_id);
+pub async fn logout(session: Session) -> impl IntoResponse {
+    if let Err(e) = session.delete().await {
+        tracing::warn!("logout: erro ao deletar sessão: {e}");
     }
-
-    // Expirar cookie no browser (max-age=0, path=/)
-    let mut removal = Cookie::new(SESSION_COOKIE_NAME, "");
-    removal.set_path("/");
-    removal.set_max_age(Duration::ZERO);
-    removal.set_http_only(true);
-    removal.set_same_site(SameSite::Strict);
-
-    (jar.add(removal), Redirect::to("/login")).into_response()
+    Redirect::to("/login").into_response()
 }
+

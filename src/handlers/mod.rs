@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
+use tower_sessions::Session;
 
 use crate::{
     db,
@@ -21,9 +22,9 @@ pub mod auth;
 
 pub async fn index(
     State(state): State<Arc<AppState>>,
-    jar: axum_extra::extract::CookieJar,
+    session: Session,
 ) -> impl IntoResponse {
-    let current_user = auth::get_session(&jar, &state);
+    let current_user = auth::get_session_data(&session).await;
     let jobs = db::list_jobs(&state.pool).await.unwrap_or_default();
     let html = state
         .tmpl
