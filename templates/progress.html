@@ -3,6 +3,37 @@
 {% block title %}Analisando {{ job.site_url }} — GEO Analyzer{% endblock %}
 
 {% block content %}
+<style>
+@keyframes progress-stripes {
+  from { background-position: 1rem 0; }
+  to   { background-position: 0 0; }
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.progress-active {
+  background-image: linear-gradient(
+    45deg,
+    rgba(255,255,255,0.22) 25%, transparent 25%,
+    transparent 50%,
+    rgba(255,255,255,0.22) 50%, rgba(255,255,255,0.22) 75%,
+    transparent 75%, transparent
+  );
+  background-size: 1rem 1rem;
+  animation: progress-stripes 0.75s linear infinite;
+}
+.spinner {
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid #c7d2fe;
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+  display: inline-block;
+  flex-shrink: 0;
+}
+</style>
+
 <div class="max-w-2xl mx-auto text-center">
   <h1 class="text-2xl font-bold text-gray-900 mb-2">Analisando seu site</h1>
   <p class="text-gray-500 mb-8">{{ job.site_url }}</p>
@@ -11,59 +42,76 @@
   <div
     class="bg-white rounded-2xl shadow-sm border border-gray-200 p-8"
     id="progress-card"
-    hx-ext="sse"
-    sse-connect="/jobs/{{ job.id }}/status"
-    sse-swap="none"
-    hx-on:sse-message="updateProgress(event)"
   >
     <!-- Status atual -->
-    <div id="status-icon" class="text-5xl mb-4">
-      {% if job.status == "pending" %}🕐
-      {% elif job.status == "crawling" %}🕸️
-      {% elif job.status == "analyzing" %}🔬
-      {% elif job.status == "completed" %}✅
-      {% else %}❌
-      {% endif %}
+    <div class="relative flex justify-center items-center mb-4">
+      <span
+        id="pulse-ring"
+        class="absolute w-20 h-20 rounded-full bg-indigo-300
+          {% if job.status != 'completed' and job.status != 'failed' %}animate-ping opacity-20{% else %}opacity-0{% endif %}"
+      ></span>
+      <div id="status-icon" class="relative z-10 text-5xl leading-none">
+        {% if job.status == "pending" %}🕐
+        {% elif job.status == "crawling" %}🕸️
+        {% elif job.status == "analyzing" %}🔬
+        {% elif job.status == "completed" %}✅
+        {% else %}❌
+        {% endif %}
+      </div>
     </div>
 
-    <div id="status-text" class="text-xl font-semibold text-gray-700 mb-2">
-      {% if job.status == "pending" %}Aguardando início...
-      {% elif job.status == "crawling" %}Descobrindo páginas...
-      {% elif job.status == "analyzing" %}Analisando páginas...
-      {% elif job.status == "completed" %}Análise concluída!
-      {% else %}Ocorreu um erro
-      {% endif %}
+    <div class="text-xl font-semibold text-gray-700 mb-2">
+      <span id="status-label">
+        {% if job.status == "pending" %}Aguardando início
+        {% elif job.status == "crawling" %}Descobrindo páginas
+        {% elif job.status == "analyzing" %}Analisando páginas
+        {% elif job.status == "completed" %}Análise concluída!
+        {% else %}Ocorreu um erro
+        {% endif %}
+      </span><span
+        id="status-dots"
+        class="{% if job.status == 'completed' or job.status == 'failed' %}hidden{% endif %}"
+      ></span>
     </div>
 
     <!-- Barra de progresso -->
     <div class="w-full bg-gray-100 rounded-full h-3 mb-3">
       <div
         id="progress-bar"
-        class="bg-indigo-500 h-3 rounded-full transition-all duration-500"
+        class="bg-indigo-500 h-3 rounded-full transition-all duration-500{% if job.status != 'completed' and job.status != 'failed' %} progress-active{% endif %}"
         style="width: {% if job.total_pages > 0 %}{{ (job.processed_pages * 100 / job.total_pages) | int }}{% else %}0{% endif %}%"
       ></div>
     </div>
 
-    <div id="progress-numbers" class="text-gray-500 text-sm mb-6">
+    <div id="progress-numbers" class="text-gray-500 text-sm mb-4">
       <span id="processed">{{ job.processed_pages }}</span> /
       <span id="total">{{ job.total_pages }}</span> páginas
     </div>
 
+    <!-- Indicador de atividade em segundo plano -->
+    <div
+      id="activity-indicator"
+      class="{% if job.status == 'completed' or job.status == 'failed' %}hidden {% endif %}flex items-center justify-center gap-2 text-xs text-indigo-500 mb-5"
+    >
+      <span class="spinner"></span>
+      <span>Processando em segundo plano…</span>
+    </div>
+
     <!-- Steps visuais -->
     <div class="flex justify-center gap-6 text-sm">
-      <div class="step {% if job.status != 'pending' %}text-indigo-600 font-medium{% else %}text-gray-400{% endif %}">
+      <div id="step-discover" class="step {% if job.status != 'pending' %}text-indigo-600 font-medium{% else %}text-gray-400{% endif %}">
         🔍 Descobrindo
       </div>
       <div class="text-gray-300">→</div>
-      <div class="step {% if job.status == 'analyzing' or job.status == 'completed' %}text-indigo-600 font-medium{% else %}text-gray-400{% endif %}">
+      <div id="step-download" class="step {% if job.status == 'analyzing' or job.status == 'completed' %}text-indigo-600 font-medium{% else %}text-gray-400{% endif %}">
         ⬇️ Baixando
       </div>
       <div class="text-gray-300">→</div>
-      <div class="step {% if job.status == 'completed' %}text-green-600 font-medium{% elif job.status == 'analyzing' %}text-indigo-600 font-medium{% else %}text-gray-400{% endif %}">
+      <div id="step-analyze" class="step {% if job.status == 'completed' %}text-green-600 font-medium{% elif job.status == 'analyzing' %}text-indigo-600 font-medium{% else %}text-gray-400{% endif %}">
         🔬 Analisando
       </div>
       <div class="text-gray-300">→</div>
-      <div class="step {% if job.status == 'completed' %}text-green-600 font-medium animate-bounce{% else %}text-gray-400{% endif %}">
+      <div id="step-done" class="step {% if job.status == 'completed' %}text-green-600 font-medium animate-bounce{% else %}text-gray-400{% endif %}">
         ✅ Pronto
       </div>
     </div>
@@ -92,7 +140,7 @@
     >
       Ver Resultados →
     </a>
-    <p class="text-xs text-gray-400 mt-3">Redirecionando automaticamente em <span id="countdown">3</span>s…</p>
+    <p class="text-xs text-gray-400 mt-3">Redirecionando automaticamente em <span id="countdown">8</span>s…</p>
   </div>
 
   <div class="mt-4">
@@ -101,14 +149,57 @@
 </div>
 
 <script>
-{% if job.status == 'completed' %}
-startCountdown();
-{% endif %}
+// ── SSE via EventSource nativo ─────────────────────────────
+// Sempre abre — o servidor envia o estado atual como 1º evento,
+// resolvendo a race condition onde o job termina antes do browser conectar.
+(function () {
+  const src = new EventSource('/jobs/{{ job.id }}/status');
+  src.onmessage = function (event) {
+    updateProgress(event.data);
+  };
+  src.onerror = function () {
+    src.close();
+  };
+  window._progressSrc = src;
+})();
+
+// ── Animated dots ─────────────────────────────────────────
+let _dotsTimer = null;
+function startDots() {
+  const el = document.getElementById('status-dots');
+  if (!el) return;
+  el.classList.remove('hidden');
+  let n = 0;
+  clearInterval(_dotsTimer);
+  _dotsTimer = setInterval(() => {
+    n = (n + 1) % 4;
+    el.textContent = '.'.repeat(n);
+  }, 400);
+}
+function stopDots() {
+  clearInterval(_dotsTimer);
+  const el = document.getElementById('status-dots');
+  if (el) { el.classList.add('hidden'); el.textContent = ''; }
+}
+
+// ── Stop all running-state animations ─────────────────────
+function stopActiveAnimations() {
+  stopDots();
+  const ring = document.getElementById('pulse-ring');
+  if (ring) { ring.classList.remove('animate-ping', 'opacity-20'); ring.classList.add('opacity-0'); }
+  const bar = document.getElementById('progress-bar');
+  if (bar) bar.classList.remove('progress-active');
+  const act = document.getElementById('activity-indicator');
+  if (act) act.classList.add('hidden');
+}
 
 function showCompleted(totalPages) {
+  stopActiveAnimations();
+  updateSteps('completed');
+
   // Atualiza painel de progresso para estado final
   document.getElementById('status-icon').textContent = '✅';
-  document.getElementById('status-text').textContent = 'Análise concluída!';
+  document.getElementById('status-label').textContent = 'Análise concluída!';
   document.getElementById('progress-bar').style.width = '100%';
   document.getElementById('progress-bar').classList.replace('bg-indigo-500', 'bg-green-500');
 
@@ -119,7 +210,7 @@ function showCompleted(totalPages) {
 }
 
 function startCountdown() {
-  let seconds = 3;
+  let seconds = 8;
   const el = document.getElementById('countdown');
   if (!el) return;
   const timer = setInterval(() => {
@@ -132,9 +223,39 @@ function startCountdown() {
   }, 1000);
 }
 
-function updateProgress(event) {
+// ── Atualiza os steps visuais ──────────────────────────────
+function updateSteps(status) {
+  const active = 'step text-indigo-600 font-medium';
+  const done   = 'step text-green-600 font-medium';
+  const idle   = 'step text-gray-400';
+
+  const discover = document.getElementById('step-discover');
+  const download = document.getElementById('step-download');
+  const analyze  = document.getElementById('step-analyze');
+  const doneel   = document.getElementById('step-done');
+
+  discover.className = idle;
+  download.className = idle;
+  analyze.className  = idle;
+  doneel.className   = idle;
+
+  if (status === 'crawling') {
+    discover.className = active;
+  } else if (status === 'analyzing') {
+    discover.className = done;
+    download.className = active;
+    analyze.className  = active;
+  } else if (status === 'completed') {
+    discover.className = done;
+    download.className = done;
+    analyze.className  = done;
+    doneel.className   = done + ' animate-bounce';
+  }
+}
+
+function updateProgress(rawData) {
   try {
-    const data = JSON.parse(event.detail.data);
+    const data = JSON.parse(rawData);
     const status = data.status;
 
     const icons = {
@@ -145,15 +266,21 @@ function updateProgress(event) {
       failed: '❌'
     };
     const texts = {
-      pending: 'Aguardando início...',
-      crawling: 'Descobrindo páginas no sitemap...',
-      analyzing: 'Analisando conteúdo das páginas...',
+      pending: 'Aguardando início',
+      crawling: 'Descobrindo páginas no sitemap',
+      analyzing: 'Analisando conteúdo das páginas',
       completed: 'Análise concluída!',
       failed: 'Ocorreu um erro'
     };
 
     document.getElementById('status-icon').textContent = icons[status] || '⏳';
-    document.getElementById('status-text').textContent = texts[status] || status;
+    document.getElementById('status-label').textContent = texts[status] || status;
+
+    if (status !== 'completed' && status !== 'failed') {
+      startDots();
+    }
+
+    updateSteps(status);
 
     const total = data.total_pages || 0;
     const processed = data.processed_pages || 0;
@@ -164,15 +291,16 @@ function updateProgress(event) {
     document.getElementById('progress-bar').style.width = pct + '%';
 
     if (status === 'completed') {
+      if (window._progressSrc) { window._progressSrc.close(); }
       showCompleted(total);
-    }
-
-    if (status === 'failed' && data.error_message) {
+    } else if (status === 'failed') {
+      if (window._progressSrc) { window._progressSrc.close(); }
+      stopActiveAnimations();
       const existing = document.querySelector('#progress-card .error-msg');
       if (!existing) {
         const err = document.createElement('div');
         err.className = 'error-msg mt-4 bg-red-50 rounded-lg p-4 text-red-700 text-sm text-left';
-        err.innerHTML = '<strong>Erro:</strong> ' + data.error_message;
+        err.innerHTML = '<strong>Erro:</strong> ' + (data.error_message || 'Desconhecido');
         document.getElementById('progress-card').appendChild(err);
       }
     }

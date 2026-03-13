@@ -28,13 +28,66 @@ pub async fn build_client() -> Result<Client> {
     Ok(client)
 }
 
+/// Extrai URLs de Sitemap declaradas no robots.txt
+async fn discover_sitemaps_from_robots(client: &Client, base: &Url) -> Vec<String> {
+    let robots_url = match base.join("/robots.txt") {
+        Ok(u) => u.to_string(),
+        Err(_) => return vec![],
+    };
+
+    let body = match client.get(&robots_url).send().await {
+        Ok(resp) => match resp.text().await {
+            Ok(t) => t,
+            Err(_) => return vec![],
+        },
+        Err(_) => return vec![],
+    };
+
+    body.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let lower = line.to_ascii_lowercase();
+            if lower.starts_with("sitemap:") {
+                let url = line[8..].trim().to_string();
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    Some(url)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Paths alternativos de sitemap, em ordem de prioridade
+const SITEMAP_FALLBACK_PATHS: &[&str] = &[
+    "/sitemap.xml",
+    "/sitemap_index.xml",
+    "/sitemap-index.xml",
+    "/sitemap/sitemap.xml",
+    "/sitemaps/sitemap.xml",
+];
+
 /// Descobre todas as URLs do sitemap (incluindo sitemaps aninhados)
 pub async fn discover_urls(client: &Client, site_url: &str) -> Result<Vec<String>> {
     let base = Url::parse(site_url)?;
-    let sitemap_url = base.join("/sitemap.xml").map_err(|e| anyhow!(e))?;
+
+    // 1. Descobrir sitemaps via robots.txt
+    let mut sitemaps_from_robots = discover_sitemaps_from_robots(client, &base).await;
+
+    // 2. Se robots.txt não declarou nenhum sitemap, tentar paths comuns
+    if sitemaps_from_robots.is_empty() {
+        for path in SITEMAP_FALLBACK_PATHS {
+            if let Ok(u) = base.join(path) {
+                sitemaps_from_robots.push(u.to_string());
+            }
+        }
+    }
 
     let mut all_urls = Vec::new();
-    let mut sitemap_queue = vec![sitemap_url.to_string()];
+    let mut sitemap_queue = sitemaps_from_robots;
     let mut visited_sitemaps = std::collections::HashSet::new();
 
     while let Some(sm_url) = sitemap_queue.pop() {
@@ -84,9 +137,49 @@ struct SitemapResult {
     sitemap_urls: Vec<String>,
 }
 
+/// Extrai links para sitemaps XML a partir de uma página HTML
+fn extract_sitemap_links_from_html(html: &str, base: &Url) -> Vec<String> {
+    let document = Html::parse_document(html);
+    let selector = Selector::parse("a[href]").unwrap();
+    document
+        .select(&selector)
+        .filter_map(|el| el.value().attr("href"))
+        .filter_map(|href| base.join(href).ok())
+        .map(|u| u.to_string())
+        .filter(|u| {
+            let lower = u.to_ascii_lowercase();
+            lower.ends_with(".xml") || lower.contains("sitemap")
+        })
+        .collect()
+}
+
 async fn fetch_sitemap(client: &Client, url: &str) -> Result<SitemapResult> {
     let resp = client.get(url).send().await?.error_for_status()?;
+    let final_url = resp.url().clone();
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     let body = resp.text().await?;
+
+    // Se a resposta for HTML, tentar extrair links para sitemaps XML
+    if content_type.contains("text/html") {
+        let links = extract_sitemap_links_from_html(&body, &final_url);
+        if links.is_empty() {
+            return Err(anyhow!("Resposta HTML sem links para sitemap em {}", url));
+        }
+        tracing::info!(
+            "Sitemap {} retornou HTML; {} link(s) encontrado(s)",
+            url,
+            links.len()
+        );
+        return Ok(SitemapResult {
+            page_urls: vec![],
+            sitemap_urls: links,
+        });
+    }
 
     let mut reader = Reader::from_str(&body);
     reader.config_mut().trim_text(true);

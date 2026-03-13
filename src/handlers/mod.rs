@@ -162,10 +162,31 @@ pub async fn job_status_sse(
     State(state): State<Arc<AppState>>,
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
+    // Subscreve PRIMEIRO para não perder eventos enquanto lemos o DB.
     let rx = state.tx.subscribe();
-    let stream = BroadcastStream::new(rx)
+
+    // Envia o estado atual como primeiro evento — resolve a race condition onde
+    // o job termina antes do browser abrir a conexão SSE.
+    let initial: Vec<Result<axum::response::sse::Event, std::convert::Infallible>> =
+        match db::get_job(&state.pool, &job_id).await.ok().flatten() {
+            Some(job) => {
+                let evt = crate::StatusEvent {
+                    job_id: job_id.clone(),
+                    status: job.status,
+                    total_pages: job.total_pages,
+                    processed_pages: job.processed_pages,
+                    error_message: job.error_message,
+                };
+                let data = serde_json::to_string(&evt).unwrap_or_default();
+                vec![Ok(axum::response::sse::Event::default().data(data))]
+            }
+            None => vec![],
+        };
+
+    let job_id_clone = job_id.clone();
+    let broadcast_stream = BroadcastStream::new(rx)
         .filter_map(move |msg| {
-            let jid = job_id.clone();
+            let jid = job_id_clone.clone();
             match msg {
                 Ok(evt) if evt.job_id == jid => {
                     let data = serde_json::to_string(&evt).unwrap_or_default();
@@ -176,8 +197,9 @@ pub async fn job_status_sse(
                 _ => None,
             }
         })
-        .take(500); // limite de segurança
+        .take(500);
 
+    let stream = tokio_stream::iter(initial).chain(broadcast_stream);
     Sse::new(stream).into_response()
 }
 
