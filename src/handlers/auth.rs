@@ -6,6 +6,7 @@ use rand_core::OsRng;
 use axum::{
     extract::{FromRequestParts, Query, State},
     http::request::Parts,
+    http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
 };
 use axum::Form;
@@ -18,6 +19,8 @@ use crate::{
     models::{SessionData, User},
     AppState,
 };
+
+use super::csrf;
 
 // ─── AuthUser extractor ──────────────────────────────────────────────────────
 
@@ -71,10 +74,11 @@ pub async fn register_page(
     if get_session_data(&session).await.is_some() {
         return Redirect::to("/").into_response();
     }
+    let csrf_token = csrf::get_or_create_csrf_token(&session).await;
     let html = state
         .tmpl
         .get_template("register.html")
-        .and_then(|t| t.render(minijinja::context! { error => "" }))
+        .and_then(|t| t.render(minijinja::context! { error => "", csrf_token => csrf_token }))
         .unwrap_or_else(|e| format!("Template error: {e}"));
     Html(html).into_response()
 }
@@ -86,6 +90,7 @@ pub struct RegisterForm {
     pub email: String,
     pub password: String,
     pub password_confirm: String,
+    pub csrf_token: Option<String>,
 }
 
 pub async fn register(
@@ -100,6 +105,15 @@ pub async fn register(
             .and_then(|t| t.render(minijinja::context! { error => msg }))
             .unwrap_or_else(|e| format!("Template error: {e}"));
         Html(html).into_response()
+    }
+
+    // Validação CSRF
+    if !csrf::validate_csrf_token(&session, form.csrf_token.as_deref().unwrap_or("")).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Html("Token CSRF inválido. Recarregue a página e tente novamente.".to_string()),
+        )
+            .into_response();
     }
 
     let email = form.email.trim().to_lowercase();
@@ -189,10 +203,11 @@ pub async fn login_page(
         .as_deref()
         .filter(|s| s.starts_with('/'))
         .unwrap_or("");
+    let csrf_token = csrf::get_or_create_csrf_token(&session).await;
     let html = state
         .tmpl
         .get_template("login.html")
-        .and_then(|t| t.render(minijinja::context! { error => "", next => next, email => "" }))
+        .and_then(|t| t.render(minijinja::context! { error => "", next => next, email => "", csrf_token => csrf_token }))
         .unwrap_or_else(|e| format!("Template error: {e}"));
     Html(html).into_response()
 }
@@ -205,6 +220,7 @@ pub struct LoginForm {
     pub password: String,
     /// URL para redirecionar após login bem-sucedido (?next=...)
     pub next: Option<String>,
+    pub csrf_token: Option<String>,
 }
 
 pub async fn login(
@@ -219,6 +235,15 @@ pub async fn login(
         .filter(|s| !s.is_empty() && s.starts_with('/'))
         .unwrap_or("/")
         .to_string();
+
+    // Validação CSRF
+    if !csrf::validate_csrf_token(&session, form.csrf_token.as_deref().unwrap_or("")).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Html("Token CSRF inválido. Recarregue a página e tente novamente.".to_string()),
+        )
+            .into_response();
+    }
 
     fn render_error(state: &AppState, email: &str, next: &str, msg: &str) -> axum::response::Response {
         let html = state
@@ -276,7 +301,19 @@ pub async fn login(
 
 // ─── POST /logout ────────────────────────────────────────────────────────────
 
-pub async fn logout(session: Session) -> impl IntoResponse {
+#[derive(serde::Deserialize)]
+pub struct LogoutForm {
+    pub csrf_token: Option<String>,
+}
+
+pub async fn logout(session: Session, Form(form): Form<LogoutForm>) -> impl IntoResponse {
+    if !csrf::validate_csrf_token(&session, form.csrf_token.as_deref().unwrap_or("")).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Html("Token CSRF inválido.".to_string()),
+        )
+            .into_response();
+    }
     if let Err(e) = session.delete().await {
         tracing::warn!("logout: erro ao deletar sessão: {e}");
     }

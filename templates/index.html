@@ -23,6 +23,7 @@
       hx-swap="none"
       class="space-y-4"
     >
+      <input type="hidden" name="csrf_token" value="{{ csrf_token | default('') }}" />
       <label class="block">
         <span class="text-sm font-medium text-gray-700 mb-1 block">URL do site</span>
         <input
@@ -98,6 +99,7 @@
         </a>
         <button
           hx-post="/jobs/{{ job.id }}/delete"
+          hx-vals='{"csrf_token": "{{ csrf_token | default("") }}"}'
           hx-confirm="Excluir análise de {{ job.site_url }}?"
           hx-target="body"
           hx-swap="none"

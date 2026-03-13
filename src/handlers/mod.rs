@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
+use tower_sessions::Session;
 
 use crate::{
     db,
@@ -16,15 +17,20 @@ use crate::{
 };
 
 pub mod auth;
+pub mod csrf;
 
 // ─── Tela inicial ─────────────────────────────────────────────────────────────
 
 pub async fn index(
     State(state): State<Arc<AppState>>,
     auth: auth::AuthUser,
+    session: Session,
 ) -> impl IntoResponse {
     let current_user = auth.0;
-    let jobs = db::list_jobs(&state.pool).await.unwrap_or_default();
+    let csrf_token = csrf::get_or_create_csrf_token(&session).await;
+    let jobs = db::list_jobs_for_user(&state.pool, &current_user.user_id)
+        .await
+        .unwrap_or_default();
     let html = state
         .tmpl
         .get_template("index.html")
@@ -32,6 +38,7 @@ pub async fn index(
             t.render(minijinja::context! {
                 jobs => jobs,
                 current_user => current_user,
+                csrf_token => csrf_token,
             })
         })
         .unwrap_or_else(|e| format!("Template error: {e}"));
@@ -43,6 +50,12 @@ pub async fn index(
 #[derive(Deserialize)]
 pub struct AnalyzeForm {
     pub url: String,
+    pub csrf_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct DeleteForm {
+    pub csrf_token: Option<String>,
 }
 
 /// Verifica se a URL aponta para um host público (prevenção de SSRF).
@@ -65,9 +78,18 @@ fn is_safe_url(parsed: &url::Url) -> bool {
 
 pub async fn post_analyze(
     State(state): State<Arc<AppState>>,
-    _auth: auth::AuthUser,
+    auth: auth::AuthUser,
+    session: Session,
     Form(form): Form<AnalyzeForm>,
 ) -> impl IntoResponse {
+    let current_user = auth.0;
+    if !csrf::validate_csrf_token(&session, form.csrf_token.as_deref().unwrap_or("")).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Html("Token CSRF inválido. Recarregue a página e tente novamente.".to_string()),
+        )
+            .into_response();
+    }
     // Sanitizar e validar URL
     let raw = form.url.trim().to_string();
     let site_url = if raw.starts_with("http://") || raw.starts_with("https://") {
@@ -95,7 +117,8 @@ pub async fn post_analyze(
             .into_response();
     }
 
-    let job = crate::models::Job::new(site_url);
+    let mut job = crate::models::Job::new(site_url);
+    job.user_id = Some(current_user.user_id);
     if let Err(e) = db::insert_job(&state.pool, &job).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -124,9 +147,32 @@ pub async fn post_analyze(
 
 pub async fn delete_job(
     State(state): State<Arc<AppState>>,
-    _auth: auth::AuthUser,
+    auth: auth::AuthUser,
+    session: Session,
     Path(job_id): Path<String>,
+    Form(form): Form<DeleteForm>,
 ) -> impl IntoResponse {
+    let current_user = auth.0;
+    if !csrf::validate_csrf_token(&session, form.csrf_token.as_deref().unwrap_or("")).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Html("Token CSRF inválido.".to_string()),
+        )
+            .into_response();
+    }
+    match db::get_job(&state.pool, &job_id).await {
+        Ok(Some(job)) if job.user_id.as_deref() == Some(&current_user.user_id) => {}
+        Ok(Some(_)) => {
+            return (StatusCode::FORBIDDEN, Html("Acesso negado.".to_string())).into_response();
+        }
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Html("Job não encontrado.".to_string())).into_response();
+        }
+        Err(e) => {
+            tracing::error!("delete_job: DB error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Html("Erro interno.".to_string())).into_response();
+        }
+    }
     if let Err(e) = db::delete_job(&state.pool, &job_id).await {
         tracing::error!("delete_job: erro ao excluir {}: {}", job_id, e);
     }
@@ -140,9 +186,11 @@ pub async fn delete_job(
 pub async fn job_progress(
     State(state): State<Arc<AppState>>,
     auth: auth::AuthUser,
+    session: Session,
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
     let current_user = auth.0;
+    let csrf_token = csrf::get_or_create_csrf_token(&session).await;
     let job = match db::get_job(&state.pool, &job_id).await {
         Ok(Some(j)) => j,
         Ok(None) => {
@@ -159,10 +207,14 @@ pub async fn job_progress(
         }
     };
 
+    if job.user_id.as_deref() != Some(&current_user.user_id) {
+        return (StatusCode::FORBIDDEN, Html("Acesso negado.".to_string())).into_response();
+    }
+
     let html = state
         .tmpl
         .get_template("progress.html")
-        .and_then(|t| t.render(minijinja::context! { job => job, current_user => current_user }))
+        .and_then(|t| t.render(minijinja::context! { job => job, current_user => current_user, csrf_token => csrf_token }))
         .unwrap_or_else(|e| format!("Template error: {e}"));
     Html(html).into_response()
 }
@@ -171,9 +223,24 @@ pub async fn job_progress(
 
 pub async fn job_status_sse(
     State(state): State<Arc<AppState>>,
-    _auth: auth::AuthUser,
+    auth: auth::AuthUser,
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
+    let current_user = auth.0;
+    // Verificar propriedade antes de expor o stream
+    match db::get_job(&state.pool, &job_id).await {
+        Ok(Some(job)) if job.user_id.as_deref() == Some(&current_user.user_id) => {}
+        Ok(Some(_)) => {
+            return (StatusCode::FORBIDDEN, Html("Acesso negado.".to_string())).into_response();
+        }
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Html("Job não encontrado.".to_string())).into_response();
+        }
+        Err(e) => {
+            tracing::error!("job_status_sse: DB error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Html("Erro interno.".to_string())).into_response();
+        }
+    }
     // Subscreve PRIMEIRO para não perder eventos enquanto lemos o DB.
     let rx = state.tx.subscribe();
 
@@ -229,16 +296,22 @@ const PAGE_SIZE: i64 = 25;
 pub async fn job_dashboard(
     State(state): State<Arc<AppState>>,
     auth: auth::AuthUser,
+    session: Session,
     Path(job_id): Path<String>,
     Query(q): Query<DashboardQuery>,
 ) -> impl IntoResponse {
     let current_user = auth.0;
+    let csrf_token = csrf::get_or_create_csrf_token(&session).await;
     let job = match db::get_job(&state.pool, &job_id).await {
         Ok(Some(j)) => j,
         _ => {
             return (StatusCode::NOT_FOUND, Html("Job não encontrado".to_string())).into_response()
         }
     };
+
+    if job.user_id.as_deref() != Some(&current_user.user_id) {
+        return (StatusCode::FORBIDDEN, Html("Acesso negado.".to_string())).into_response();
+    }
 
     // Se ainda em andamento, redirecionar para progresso
     if job.status != "completed" && job.status != "failed" {
@@ -323,7 +396,7 @@ pub async fn job_dashboard(
     let html = state
         .tmpl
         .get_template("dashboard.html")
-        .and_then(|t| t.render(minijinja::context! { d => dashboard, current_user => current_user }))
+        .and_then(|t| t.render(minijinja::context! { d => dashboard, current_user => current_user, csrf_token => csrf_token }))
         .unwrap_or_else(|e| format!("Template error: {e}"));
     Html(html).into_response()
 }
@@ -333,15 +406,21 @@ pub async fn job_dashboard(
 pub async fn page_detail(
     State(state): State<Arc<AppState>>,
     auth: auth::AuthUser,
+    session: Session,
     Path((job_id, page_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let current_user = auth.0;
+    let csrf_token = csrf::get_or_create_csrf_token(&session).await;
     let job = match db::get_job(&state.pool, &job_id).await {
         Ok(Some(j)) => j,
         _ => {
             return (StatusCode::NOT_FOUND, Html("Job não encontrado".to_string())).into_response()
         }
     };
+
+    if job.user_id.as_deref() != Some(&current_user.user_id) {
+        return (StatusCode::FORBIDDEN, Html("Acesso negado.".to_string())).into_response();
+    }
 
     let page = match db::get_page(&state.pool, &page_id).await {
         Ok(Some(p)) if p.job_id == job_id => p,
@@ -364,6 +443,7 @@ pub async fn page_detail(
                 recommendations => recs,
                 geo_score_pct => page.geo_score * 100.0,
                 current_user => current_user,
+                csrf_token => csrf_token,
             })
         })
         .unwrap_or_else(|e| format!("Template error: {e}"));
@@ -381,10 +461,24 @@ pub struct ExportQuery {
 
 pub async fn export_results(
     State(state): State<Arc<AppState>>,
-    _auth: auth::AuthUser,
+    auth: auth::AuthUser,
     Path(job_id): Path<String>,
     Query(q): Query<ExportQuery>,
 ) -> impl IntoResponse {
+    let current_user = auth.0;
+    match db::get_job(&state.pool, &job_id).await {
+        Ok(Some(job)) if job.user_id.as_deref() == Some(&current_user.user_id) => {}
+        Ok(Some(_)) => {
+            return (StatusCode::FORBIDDEN, "Acesso negado.".to_string()).into_response();
+        }
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, "Job não encontrado.".to_string()).into_response();
+        }
+        Err(e) => {
+            tracing::error!("export_results: DB error: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Erro interno.".to_string()).into_response();
+        }
+    }
     let pages = match db::get_pages_for_job(&state.pool, &job_id).await {
         Ok(p) => p,
         Err(_) => {

@@ -26,6 +26,7 @@
         {% if current_user %}
         <span class="text-gray-600 hidden sm:inline">{{ current_user.email }}</span>
         <form method="post" action="/logout" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token | default('') }}" />
           <button type="submit" class="text-gray-500 hover:text-gray-700 font-medium">Sair</button>
         </form>
         {% else %}
