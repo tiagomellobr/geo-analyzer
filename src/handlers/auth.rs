@@ -176,6 +176,10 @@ pub async fn register(
     }
 
     // Persistir sessão e redirecionar
+    // Regenerar ID de sessão após autenticação para prevenir session fixation
+    if let Err(e) = session.cycle_id().await {
+        tracing::warn!("register: falha ao regenerar ID de sessão: {e}");
+    }
     if let Err(e) = session.insert(USER_ID_KEY, &user.id).await {
         tracing::error!("register: session insert user_id error: {e}");
         return render_error(&state, "Erro interno. Tente novamente.", &csrf_token, &email);
@@ -296,6 +300,10 @@ pub async fn login(
     }
 
     // Persistir sessão
+    // Regenerar ID de sessão após autenticação para prevenir session fixation
+    if let Err(e) = session.cycle_id().await {
+        tracing::warn!("login: falha ao regenerar ID de sessão: {e}");
+    }
     if let Err(e) = session.insert(USER_ID_KEY, &user.id).await {
         tracing::error!("login: session insert user_id error: {e}");
         return render_error(&state, &email, &next, "Erro interno. Tente novamente.", &csrf_token);
