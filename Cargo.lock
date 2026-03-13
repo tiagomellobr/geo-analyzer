@@ -787,6 +787,7 @@ dependencies = [
  "axum",
  "axum-extra",
  "chrono",
+ "dotenvy",
  "futures",
  "lettre",
  "minijinja",

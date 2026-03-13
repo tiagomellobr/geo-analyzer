@@ -43,6 +43,9 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Carrega variáveis do arquivo .env (se existir); ignora silenciosamente caso não exista
+    dotenvy::dotenv().ok();
+
     // Logging
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
