@@ -70,17 +70,28 @@ async fn send_reset_email(config: &SmtpConfig, to_email: &str, token: &str) -> a
         .header(ContentType::TEXT_PLAIN)
         .body(body)?;
 
-    let creds = lettre::transport::smtp::authentication::Credentials::new(
-        config.user.clone(),
-        config.pass.clone(),
-    );
+    let no_tls = std::env::var("SMTP_NO_TLS")
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false);
 
-    let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.host)?
-        .port(config.port)
-        .credentials(creds)
-        .build();
+    if no_tls {
+        // Modo dev (ex: Mailpit): sem TLS e sem autenticação
+        let mailer = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.host)
+            .port(config.port)
+            .build();
+        mailer.send(email).await?;
+    } else {
+        let creds = lettre::transport::smtp::authentication::Credentials::new(
+            config.user.clone(),
+            config.pass.clone(),
+        );
+        let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.host)?
+            .port(config.port)
+            .credentials(creds)
+            .build();
+        mailer.send(email).await?;
+    }
 
-    mailer.send(email).await?;
     Ok(())
 }
 

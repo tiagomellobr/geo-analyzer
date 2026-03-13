@@ -26,6 +26,14 @@ services:
     entrypoint: ["ollama", "pull", "gemma3:1b"]
     restart: "no"
 
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: mailpit
+    ports:
+      - "8025:8025"   # Web UI
+      - "1025:1025"   # SMTP
+    restart: unless-stopped
+
   geo-analyzer:
     build:
       context: .
@@ -42,9 +50,18 @@ services:
       OLLAMA_HOST: "http://ollama:11434"
       OLLAMA_MODEL: "gemma3:1b"
       OLLAMA_TIMEOUT_SECS: "120"
+      SMTP_HOST: "mailpit"
+      SMTP_PORT: "1025"
+      SMTP_USER: "test"
+      SMTP_PASS: "test"
+      SMTP_FROM: "noreply@geo-analyzer.app"
+      SMTP_NO_TLS: "true"
+      APP_BASE_URL: "http://localhost:3000"
     depends_on:
       ollama:
         condition: service_healthy
+      mailpit:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
