@@ -1,3 +1,5 @@
+pub mod llm;
+
 use once_cell::sync::Lazy;
 use regex::Regex;
 use scraper::{Html, Selector};
@@ -55,24 +57,77 @@ pub struct AnalysisResult {
     pub recommendations: Vec<Recommendation>,
     pub has_schema_markup: bool,
     pub has_og_tags: bool,
+    /// Resultado fresco do LLM (apenas quando inferência foi executada nesta chamada,
+    /// não quando veio de cache). Usado pelo worker para persistir no llm_cache.
+    pub llm_analysis: Option<llm::LlmAnalysis>,
 }
 
-pub fn analyze_page(page: &CrawledPage) -> AnalysisResult {
+/// Analisa uma página calculando todos os scores GEO.
+///
+/// - `llm_client`: cliente Ollama para inferência. Ignorado se `llm_override` for Some.
+/// - `llm_override`: resultado já em cache — pula a chamada ao LLM completamente.
+///
+/// Estratégia de concorrência: a chamada ao LLM (async, não-Send) é feita
+/// ANTES de criar o `scraper::Html` (não-Send), evitando await com Html vivo.
+pub async fn analyze_page(
+    page: &CrawledPage,
+    llm_client: Option<&llm::LlmClient>,
+    llm_override: Option<llm::LlmAnalysis>,
+) -> AnalysisResult {
+    // Fase 1 — cache hit ou chamada LLM (async). Html ainda não foi criado.
+    let (llm_result, is_fresh) = if let Some(cached) = llm_override {
+        (Some(cached), false)
+    } else {
+        match llm_client {
+            Some(client) => match client.analyze(&page.text).await {
+                Ok(r) => {
+                    tracing::debug!("LLM analysis OK para {}", page.url);
+                    (Some(r), true)
+                }
+                Err(e) => {
+                    tracing::warn!("LLM falhou para {}: {e}. Usando heurísticas.", page.url);
+                    (None, false)
+                }
+            },
+            None => (None, false),
+        }
+    };
+
+    // Fase 2 — análise síncrona com HTML parsing (sem awaits)
+    analyze_sync(page, llm_result, is_fresh)
+}
+
+fn analyze_sync(page: &CrawledPage, llm_result: Option<llm::LlmAnalysis>, is_fresh: bool) -> AnalysisResult {
     let document = Html::parse_document(&page.html);
     let text_lc = page.text.to_lowercase();
 
+    // Critérios objetivos — sempre via heurística
     let cite_sources = score_cite_sources(&document, &page.html);
     let quotation_addition = score_quotation_addition(&page.text);
     let statistics_addition = score_statistics_addition(&page.text);
-    let fluency = score_fluency(&page.text);
-    let authoritative_tone = score_authoritative_tone(&page.text, &text_lc);
-    let technical_terms = score_technical_terms(&text_lc);
-    let easy_to_understand = score_easy_to_understand(&page.text, &document);
     let content_structure = score_content_structure(&document);
     let (metadata_quality, has_og_tags) =
         score_metadata_quality(&document, &page.title, &page.meta_description);
     let (schema_markup, has_schema_markup) = score_schema_markup(&page.html);
     let content_depth = score_content_depth(&page.text, page.word_count);
+
+    // Critérios subjetivos — LLM quando disponível, heurística como fallback
+    let fluency = llm_result
+        .as_ref()
+        .map(|r| r.fluency)
+        .unwrap_or_else(|| score_fluency(&page.text));
+    let authoritative_tone = llm_result
+        .as_ref()
+        .map(|r| r.authoritative_tone)
+        .unwrap_or_else(|| score_authoritative_tone(&page.text, &text_lc));
+    let technical_terms = llm_result
+        .as_ref()
+        .map(|r| r.technical_terms)
+        .unwrap_or_else(|| score_technical_terms(&text_lc));
+    let easy_to_understand = llm_result
+        .as_ref()
+        .map(|r| r.easy_to_understand)
+        .unwrap_or_else(|| score_easy_to_understand(&page.text, &document));
 
     let scores = GeoScores {
         cite_sources,
@@ -88,13 +143,18 @@ pub fn analyze_page(page: &CrawledPage) -> AnalysisResult {
         content_depth,
     };
 
-    let recommendations = build_recommendations(&scores, has_og_tags, has_schema_markup);
+    let recommendations =
+        build_recommendations(&scores, has_og_tags, has_schema_markup, llm_result.as_ref());
+
+    // Expor resultado fresco do LLM para que o worker possa persistir no cache
+    let llm_analysis = if is_fresh { llm_result } else { None };
 
     AnalysisResult {
         scores,
         recommendations,
         has_schema_markup,
         has_og_tags,
+        llm_analysis,
     }
 }
 
@@ -377,6 +437,7 @@ fn build_recommendations(
     scores: &GeoScores,
     has_og_tags: bool,
     has_schema_markup: bool,
+    llm: Option<&llm::LlmAnalysis>,
 ) -> Vec<Recommendation> {
     let mut recs = Vec::new();
 
@@ -402,30 +463,46 @@ fn build_recommendations(
         });
     }
     if scores.fluency < 0.5 {
+        let msg = llm
+            .and_then(|r| r.fluency_recommendation.as_deref())
+            .unwrap_or("Revise a legibilidade do texto. Prefira frases mais curtas, parágrafos menores e linguagem clara.")
+            .to_string();
         recs.push(Recommendation {
             criterion: "Fluência e Legibilidade".to_string(),
-            message: "Revise a legibilidade do texto. Prefira frases mais curtas, parágrafos menores e linguagem clara.".to_string(),
+            message: msg,
             impact: "Alta (+27%)".to_string(),
         });
     }
     if scores.authoritative_tone < 0.5 {
+        let msg = llm
+            .and_then(|r| r.authoritative_tone_recommendation.as_deref())
+            .unwrap_or("Use tom autoritativo. Evite linguagem vaga ou incerta. Faça afirmações claras baseadas em evidências.")
+            .to_string();
         recs.push(Recommendation {
             criterion: "Tom Autoritativo".to_string(),
-            message: "Use tom autoritativo. Evite linguagem vaga ou incerta. Faça afirmações claras baseadas em evidências.".to_string(),
+            message: msg,
             impact: "Média (+10.5%)".to_string(),
         });
     }
     if scores.technical_terms < 0.4 {
+        let msg = llm
+            .and_then(|r| r.technical_terms_recommendation.as_deref())
+            .unwrap_or("Incorpore terminologia técnica relevante ao seu domínio para demonstrar especialização.")
+            .to_string();
         recs.push(Recommendation {
             criterion: "Termos Técnicos".to_string(),
-            message: "Incorpore terminologia técnica relevante ao seu domínio para demonstrar especialização.".to_string(),
+            message: msg,
             impact: "Média (+17%)".to_string(),
         });
     }
     if scores.easy_to_understand < 0.5 {
+        let msg = llm
+            .and_then(|r| r.easy_to_understand_recommendation.as_deref())
+            .unwrap_or("Simplifique termos complexos, use exemplos concretos e estruture o conteúdo com subtítulos e listas.")
+            .to_string();
         recs.push(Recommendation {
             criterion: "Clareza e Acessibilidade".to_string(),
-            message: "Simplifique termos complexos, use exemplos concretos e estruture o conteúdo com subtítulos e listas.".to_string(),
+            message: msg,
             impact: "Média (+14%)".to_string(),
         });
     }

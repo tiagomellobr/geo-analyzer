@@ -33,6 +33,7 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub tmpl: Environment<'static>,
     pub tx: broadcast::Sender<StatusEvent>,
+    pub llm_client: analyzer::llm::LlmClient,
 }
 
 #[tokio::main]
@@ -56,7 +57,18 @@ async fn main() -> anyhow::Result<()> {
     // Canal SSE
     let (tx, _rx) = broadcast::channel::<StatusEvent>(128);
 
-    let state = Arc::new(AppState { pool, tmpl, tx });
+    // Cliente LLM (Ollama)
+    let llm_client = analyzer::llm::LlmClient::new();
+    if llm_client.is_available().await {
+        tracing::info!("Ollama disponível em {} | modelo: {}", llm_client.host, llm_client.model);
+        if let Err(e) = llm_client.ensure_model_pulled().await {
+            tracing::warn!("Não foi possível puxar o modelo: {e}. Análise LLM usará fallback heurístico.");
+        }
+    } else {
+        tracing::warn!("Ollama não encontrado em {}. Análise LLM usará fallback heurístico.", llm_client.host);
+    }
+
+    let state = Arc::new(AppState { pool, tmpl, tx, llm_client });
 
     // Rotas
     let app = Router::new()

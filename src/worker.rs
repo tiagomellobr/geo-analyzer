@@ -55,7 +55,23 @@ pub async fn run_analysis(state: Arc<AppState>, job_id: String) {
     // Analisar cada página
     let mut processed = 0i64;
     for crawled in pages {
-        let result = analyzer::analyze_page(&crawled);
+        // Verificar cache LLM antes de chamar inferência
+        let cached_llm = db::get_llm_cache(pool, &crawled.url).await.ok().flatten();
+        let had_cache = cached_llm.is_some();
+        if had_cache {
+            tracing::debug!("Cache LLM hit para {}", crawled.url);
+        }
+
+        let result = analyzer::analyze_page(&crawled, Some(&state.llm_client), cached_llm).await;
+
+        // Persistir resultado fresco do LLM no cache
+        if !had_cache {
+            if let Some(ref analysis) = result.llm_analysis {
+                if let Err(e) = db::set_llm_cache(pool, &crawled.url, analysis).await {
+                    tracing::warn!("Falha ao salvar cache LLM para {}: {e}", crawled.url);
+                }
+            }
+        }
         let scores = &result.scores;
         let geo_score = scores.global_score();
 

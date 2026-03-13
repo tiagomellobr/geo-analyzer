@@ -25,6 +25,9 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     sqlx::query(include_str!("../../migrations/001_initial.sql"))
         .execute(pool)
         .await?;
+    sqlx::query(include_str!("../../migrations/002_llm_cache.sql"))
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -150,4 +153,69 @@ pub async fn get_page(pool: &SqlitePool, id: &str) -> Result<Option<Page>> {
         .fetch_optional(pool)
         .await?;
     Ok(page)
+}
+
+// ─── LLM Cache ───────────────────────────────────────────────────────────────
+
+pub async fn get_llm_cache(
+    pool: &SqlitePool,
+    url: &str,
+) -> Result<Option<crate::analyzer::llm::LlmAnalysis>> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT fluency, authoritative_tone, technical_terms, easy_to_understand,
+                fluency_rec, auth_rec, tech_rec, easy_rec
+         FROM llm_cache WHERE url = ?",
+    )
+    .bind(url)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r: sqlx::sqlite::SqliteRow| crate::analyzer::llm::LlmAnalysis {
+        fluency: r.get("fluency"),
+        authoritative_tone: r.get("authoritative_tone"),
+        technical_terms: r.get("technical_terms"),
+        easy_to_understand: r.get("easy_to_understand"),
+        fluency_recommendation: r.get("fluency_rec"),
+        authoritative_tone_recommendation: r.get("auth_rec"),
+        technical_terms_recommendation: r.get("tech_rec"),
+        easy_to_understand_recommendation: r.get("easy_rec"),
+    }))
+}
+
+pub async fn set_llm_cache(
+    pool: &SqlitePool,
+    url: &str,
+    analysis: &crate::analyzer::llm::LlmAnalysis,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO llm_cache
+             (url, fluency, authoritative_tone, technical_terms, easy_to_understand,
+              fluency_rec, auth_rec, tech_rec, easy_rec, cached_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(url) DO UPDATE SET
+             fluency=excluded.fluency,
+             authoritative_tone=excluded.authoritative_tone,
+             technical_terms=excluded.technical_terms,
+             easy_to_understand=excluded.easy_to_understand,
+             fluency_rec=excluded.fluency_rec,
+             auth_rec=excluded.auth_rec,
+             tech_rec=excluded.tech_rec,
+             easy_rec=excluded.easy_rec,
+             cached_at=excluded.cached_at",
+    )
+    .bind(url)
+    .bind(analysis.fluency)
+    .bind(analysis.authoritative_tone)
+    .bind(analysis.technical_terms)
+    .bind(analysis.easy_to_understand)
+    .bind(&analysis.fluency_recommendation)
+    .bind(&analysis.authoritative_tone_recommendation)
+    .bind(&analysis.technical_terms_recommendation)
+    .bind(&analysis.easy_to_understand_recommendation)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(())
 }

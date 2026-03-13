@@ -1,4 +1,31 @@
 services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # Puxa o modelo uma única vez após o Ollama estar saudável
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: "http://ollama:11434"
+    entrypoint: ["ollama", "pull", "gemma3:1b"]
+    restart: "no"
+
   geo-analyzer:
     build:
       context: .
@@ -12,7 +39,13 @@ services:
       DATABASE_URL: "sqlite:///data/geo_analyzer.db"
       BIND: "0.0.0.0:3000"
       RUST_LOG: "geo_analyzer=info,tower_http=info"
+      OLLAMA_HOST: "http://ollama:11434"
+      OLLAMA_MODEL: "gemma3:1b"
+    depends_on:
+      ollama:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   geo_data:
+  ollama_data:
