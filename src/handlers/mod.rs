@@ -15,9 +15,15 @@ use crate::{
     AppState,
 };
 
+pub mod auth;
+
 // ─── Tela inicial ─────────────────────────────────────────────────────────────
 
-pub async fn index(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn index(
+    State(state): State<Arc<AppState>>,
+    jar: axum_extra::extract::CookieJar,
+) -> impl IntoResponse {
+    let current_user = auth::get_session(&jar, &state);
     let jobs = db::list_jobs(&state.pool).await.unwrap_or_default();
     let html = state
         .tmpl
@@ -25,6 +31,7 @@ pub async fn index(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         .and_then(|t| {
             t.render(minijinja::context! {
                 jobs => jobs,
+                current_user => current_user,
             })
         })
         .unwrap_or_else(|e| format!("Template error: {e}"));

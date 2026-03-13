@@ -35,6 +35,8 @@ pub struct AppState {
     pub tmpl: Environment<'static>,
     pub tx: broadcast::Sender<StatusEvent>,
     pub llm_client: analyzer::llm::LlmClient,
+    /// Sessões ativas: session_id → dados do usuário
+    pub sessions: std::sync::Mutex<std::collections::HashMap<String, models::SessionData>>,
 }
 
 #[tokio::main]
@@ -69,11 +71,22 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("Ollama não encontrado em {}. Análise LLM usará fallback heurístico.", llm_client.host);
     }
 
-    let state = Arc::new(AppState { pool, tmpl, tx, llm_client });
+    let state = Arc::new(AppState {
+        pool,
+        tmpl,
+        tx,
+        llm_client,
+        sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
+    });
 
     // Rotas
     let app = Router::new()
         .route("/", get(handlers::index))
+        .route("/register", get(handlers::auth::register_page))
+        .route("/register", post(handlers::auth::register))
+        .route("/login", get(handlers::auth::login_page))
+        .route("/login", post(handlers::auth::login))
+        .route("/logout", post(handlers::auth::logout))
         .route("/analyze", post(handlers::post_analyze))
         .route("/jobs/:job_id", get(handlers::job_progress))
         .route("/jobs/:job_id/results", get(handlers::job_dashboard))
@@ -118,6 +131,16 @@ fn build_templates() -> Environment<'static> {
     env.add_template_owned(
         "page_detail.html",
         include_str!("../templates/page_detail.html").to_string(),
+    )
+    .unwrap();
+    env.add_template_owned(
+        "login.html",
+        include_str!("../templates/login.html").to_string(),
+    )
+    .unwrap();
+    env.add_template_owned(
+        "register.html",
+        include_str!("../templates/register.html").to_string(),
     )
     .unwrap();
 

@@ -2,6 +2,13 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Dados da sessão autenticada (armazenados em memória)
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionData {
+    pub user_id: String,
+    pub email: String,
+}
+
 /// Usuário autenticado
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct User {

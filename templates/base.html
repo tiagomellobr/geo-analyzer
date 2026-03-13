@@ -15,11 +15,26 @@
 </head>
 <body class="bg-gray-50 min-h-screen font-sans text-gray-800">
   <header class="bg-white border-b border-gray-200 shadow-sm">
-    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
-      <a href="/" class="text-xl font-bold text-indigo-600 hover:text-indigo-700">
-        🔍 GEO Analyzer
-      </a>
-      <span class="text-gray-400 text-sm">Generative Engine Optimization</span>
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <a href="/" class="text-xl font-bold text-indigo-600 hover:text-indigo-700">
+          🔍 GEO Analyzer
+        </a>
+        <span class="text-gray-400 text-sm hidden sm:inline">Generative Engine Optimization</span>
+      </div>
+      <nav class="flex items-center gap-3 text-sm">
+        {% if current_user %}
+        <span class="text-gray-600 hidden sm:inline">{{ current_user.email }}</span>
+        <form method="post" action="/logout" class="inline">
+          <button type="submit" class="text-gray-500 hover:text-gray-700 font-medium">Sair</button>
+        </form>
+        {% else %}
+        <a href="/login" class="text-gray-600 hover:text-gray-800 font-medium">Entrar</a>
+        <a href="/register" class="bg-indigo-600 hover:bg-indigo-700 text-white font-medium px-3 py-1.5 rounded-lg transition-colors">
+          Cadastrar
+        </a>
+        {% endif %}
+      </nav>
     </div>
   </header>
 
