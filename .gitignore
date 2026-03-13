@@ -1,1 +1,7 @@
 /target
+/docs/
+.venv/
+.DS_Store
+*.log
+*.sqlite
+*.pdf

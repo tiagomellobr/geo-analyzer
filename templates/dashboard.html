@@ -18,6 +18,16 @@
       href="/jobs/{{ d.job.id }}/export?format=csv"
       class="text-sm bg-white border border-gray-200 hover:border-indigo-300 text-gray-700 px-4 py-2 rounded-lg transition-colors"
     >↓ CSV</a>
+    <a
+      href="/jobs/{{ d.job.id }}/export?format=pdf"
+      class="text-sm bg-red-50 border border-red-200 hover:border-red-400 text-red-700 px-4 py-2 rounded-lg transition-colors font-medium"
+      title="Exportar relatório resumido em PDF"
+    >↓ PDF</a>
+    <a
+      href="/jobs/{{ d.job.id }}/export?format=pdf&detail=true"
+      class="text-sm bg-red-50 border border-red-200 hover:border-red-400 text-red-700 px-4 py-2 rounded-lg transition-colors"
+      title="Exportar relatório completo com detalhe por página"
+    >↓ PDF+Detalhe</a>
     <a href="/" class="text-sm text-indigo-600 hover:underline px-4 py-2">← Nova análise</a>
   </div>
 </div>

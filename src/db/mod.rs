@@ -28,9 +28,16 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     sqlx::query(include_str!("../../migrations/002_llm_cache.sql"))
         .execute(pool)
         .await?;
-    sqlx::query(include_str!("../../migrations/003_llm_summary.sql"))
+    // Migration 003 adiciona coluna que pode já existir em bancos anteriores;
+    // ignora o erro de coluna duplicada para ser idempotente.
+    if let Err(e) = sqlx::query(include_str!("../../migrations/003_llm_summary.sql"))
         .execute(pool)
-        .await?;
+        .await
+    {
+        if !e.to_string().contains("duplicate column name") {
+            return Err(e.into());
+        }
+    }
     Ok(())
 }
 

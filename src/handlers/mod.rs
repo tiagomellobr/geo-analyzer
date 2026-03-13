@@ -11,7 +11,7 @@ use tokio_stream::StreamExt as _;
 
 use crate::{
     db,
-    models::{JobDashboard, PageSummary},
+    models::{Job, JobDashboard, Page, PageSummary},
     AppState,
 };
 
@@ -358,6 +358,8 @@ pub async fn page_detail(
 #[derive(Deserialize)]
 pub struct ExportQuery {
     pub format: Option<String>,
+    /// Incluir seção detalhada por página no PDF (?detail=true)
+    pub detail: Option<bool>,
 }
 
 pub async fn export_results(
@@ -373,6 +375,7 @@ pub async fn export_results(
     };
 
     match q.format.as_deref().unwrap_or("json") {
+        "pdf" => return export_pdf(state, job_id, &pages, q.detail.unwrap_or(false)).await,
         "csv" => {
             // Escapa campo CSV: envolve em aspas duplas e duplica aspas internas
             fn csv_field(s: &str) -> String {
@@ -428,4 +431,82 @@ pub async fn export_results(
             (headers, json).into_response()
         }
     }
+}
+
+// ─── Exportação PDF ──────────────────────────────────────────────────────────
+
+async fn export_pdf(
+    state: std::sync::Arc<AppState>,
+    job_id: String,
+    pages: &[Page],
+    include_detail: bool,
+) -> axum::response::Response {
+    let suffix = if include_detail { "detail" } else { "summary" };
+    let cache_path = format!("/tmp/geo-pdf-{}-{}.pdf", job_id, suffix);
+
+    // Verifica cache de 10 minutos
+    let cached_bytes: Option<Vec<u8>> = match tokio::fs::metadata(&cache_path).await {
+        Ok(meta) => {
+            let fresh = meta
+                .modified()
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .map(|e| e.as_secs() < 600)
+                .unwrap_or(false);
+            if fresh {
+                tokio::fs::read(&cache_path).await.ok()
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    };
+
+    let pdf_bytes = if let Some(b) = cached_bytes {
+        b
+    } else {
+        // Busca o job para os metadados da capa
+        let job: Job = match db::get_job(&state.pool, &job_id).await {
+            Ok(Some(j)) => j,
+            _ => {
+                return (StatusCode::NOT_FOUND, "Job não encontrado").into_response();
+            }
+        };
+
+        // Geração é síncrona/CPU — executa em thread separada
+        let pages_clone: Vec<Page> = pages.to_vec();
+        let result = tokio::task::spawn_blocking(move || {
+            crate::pdf::generate_pdf_bytes(&job, &pages_clone, include_detail)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(bytes)) => {
+                let _ = tokio::fs::write(&cache_path, &bytes).await;
+                bytes
+            }
+            Ok(Err(e)) => {
+                tracing::error!("Erro ao gerar PDF: {e}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("Erro ao gerar PDF: {e}"))
+                    .into_response();
+            }
+            Err(e) => {
+                tracing::error!("Panic na geração do PDF: {e}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Erro interno ao gerar PDF")
+                    .into_response();
+            }
+        }
+    };
+
+    let filename = format!("geo-{}-{}.pdf", job_id, suffix);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        "application/pdf".parse().unwrap(),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{}\"", filename).parse().unwrap(),
+    );
+    (headers, pdf_bytes).into_response()
 }

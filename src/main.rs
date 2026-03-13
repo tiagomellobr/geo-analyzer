@@ -3,6 +3,7 @@ mod crawler;
 mod db;
 mod handlers;
 mod models;
+mod pdf;
 mod worker;
 
 use std::sync::Arc;
