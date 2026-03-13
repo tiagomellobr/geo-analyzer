@@ -4,8 +4,9 @@ use argon2::{
 };
 use rand_core::OsRng;
 use axum::{
-    extract::State,
-    response::{Html, IntoResponse, Redirect},
+    extract::{FromRequestParts, Query, State},
+    http::request::Parts,
+    response::{Html, IntoResponse, Redirect, Response},
 };
 use axum::Form;
 use serde::Deserialize;
@@ -17,6 +18,39 @@ use crate::{
     models::{SessionData, User},
     AppState,
 };
+
+// ─── AuthUser extractor ──────────────────────────────────────────────────────
+
+/// Extractor que valida a sessão autenticada.
+/// Em rotas protegidas, se o usuário não estiver autenticado, redireciona para `/login?next=<path>`.
+pub struct AuthUser(pub SessionData);
+
+#[async_trait::async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for AuthUser {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let session = Session::from_request_parts(parts, state)
+            .await
+            .map_err(|e| e.into_response())?;
+
+        match get_session_data(&session).await {
+            Some(data) => Ok(AuthUser(data)),
+            None => {
+                let path = parts
+                    .uri
+                    .path_and_query()
+                    .map(|pq| pq.as_str())
+                    .unwrap_or("/");
+                let next_param: String =
+                    url::form_urlencoded::Serializer::new(String::new())
+                        .append_pair("next", path)
+                        .finish();
+                Err(Redirect::to(&format!("/login?{}", next_param)).into_response())
+            }
+        }
+    }
+}
 
 const USER_ID_KEY: &str = "user_id";
 const EMAIL_KEY: &str = "email";
@@ -137,17 +171,28 @@ pub async fn register(
 
 // ─── GET /login ─────────────────────────────────────────────────────────────
 
+#[derive(Deserialize)]
+pub struct LoginQuery {
+    pub next: Option<String>,
+}
+
 pub async fn login_page(
     State(state): State<Arc<AppState>>,
     session: Session,
+    Query(q): Query<LoginQuery>,
 ) -> impl IntoResponse {
     if get_session_data(&session).await.is_some() {
         return Redirect::to("/").into_response();
     }
+    let next = q
+        .next
+        .as_deref()
+        .filter(|s| s.starts_with('/'))
+        .unwrap_or("");
     let html = state
         .tmpl
         .get_template("login.html")
-        .and_then(|t| t.render(minijinja::context! { error => "", next => "" }))
+        .and_then(|t| t.render(minijinja::context! { error => "", next => next, email => "" }))
         .unwrap_or_else(|e| format!("Template error: {e}"));
     Html(html).into_response()
 }

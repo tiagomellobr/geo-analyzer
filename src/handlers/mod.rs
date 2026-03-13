@@ -8,7 +8,6 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
-use tower_sessions::Session;
 
 use crate::{
     db,
@@ -22,9 +21,9 @@ pub mod auth;
 
 pub async fn index(
     State(state): State<Arc<AppState>>,
-    session: Session,
+    auth: auth::AuthUser,
 ) -> impl IntoResponse {
-    let current_user = auth::get_session_data(&session).await;
+    let current_user = auth.0;
     let jobs = db::list_jobs(&state.pool).await.unwrap_or_default();
     let html = state
         .tmpl
@@ -66,6 +65,7 @@ fn is_safe_url(parsed: &url::Url) -> bool {
 
 pub async fn post_analyze(
     State(state): State<Arc<AppState>>,
+    _auth: auth::AuthUser,
     Form(form): Form<AnalyzeForm>,
 ) -> impl IntoResponse {
     // Sanitizar e validar URL
@@ -124,6 +124,7 @@ pub async fn post_analyze(
 
 pub async fn delete_job(
     State(state): State<Arc<AppState>>,
+    _auth: auth::AuthUser,
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
     if let Err(e) = db::delete_job(&state.pool, &job_id).await {
@@ -138,8 +139,10 @@ pub async fn delete_job(
 
 pub async fn job_progress(
     State(state): State<Arc<AppState>>,
+    auth: auth::AuthUser,
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
+    let current_user = auth.0;
     let job = match db::get_job(&state.pool, &job_id).await {
         Ok(Some(j)) => j,
         Ok(None) => {
@@ -159,7 +162,7 @@ pub async fn job_progress(
     let html = state
         .tmpl
         .get_template("progress.html")
-        .and_then(|t| t.render(minijinja::context! { job => job }))
+        .and_then(|t| t.render(minijinja::context! { job => job, current_user => current_user }))
         .unwrap_or_else(|e| format!("Template error: {e}"));
     Html(html).into_response()
 }
@@ -168,6 +171,7 @@ pub async fn job_progress(
 
 pub async fn job_status_sse(
     State(state): State<Arc<AppState>>,
+    _auth: auth::AuthUser,
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
     // Subscreve PRIMEIRO para não perder eventos enquanto lemos o DB.
@@ -224,9 +228,11 @@ const PAGE_SIZE: i64 = 25;
 
 pub async fn job_dashboard(
     State(state): State<Arc<AppState>>,
+    auth: auth::AuthUser,
     Path(job_id): Path<String>,
     Query(q): Query<DashboardQuery>,
 ) -> impl IntoResponse {
+    let current_user = auth.0;
     let job = match db::get_job(&state.pool, &job_id).await {
         Ok(Some(j)) => j,
         _ => {
@@ -317,7 +323,7 @@ pub async fn job_dashboard(
     let html = state
         .tmpl
         .get_template("dashboard.html")
-        .and_then(|t| t.render(minijinja::context! { d => dashboard }))
+        .and_then(|t| t.render(minijinja::context! { d => dashboard, current_user => current_user }))
         .unwrap_or_else(|e| format!("Template error: {e}"));
     Html(html).into_response()
 }
@@ -326,8 +332,10 @@ pub async fn job_dashboard(
 
 pub async fn page_detail(
     State(state): State<Arc<AppState>>,
+    auth: auth::AuthUser,
     Path((job_id, page_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    let current_user = auth.0;
     let job = match db::get_job(&state.pool, &job_id).await {
         Ok(Some(j)) => j,
         _ => {
@@ -355,6 +363,7 @@ pub async fn page_detail(
                 page => page,
                 recommendations => recs,
                 geo_score_pct => page.geo_score * 100.0,
+                current_user => current_user,
             })
         })
         .unwrap_or_else(|e| format!("Template error: {e}"));
@@ -372,6 +381,7 @@ pub struct ExportQuery {
 
 pub async fn export_results(
     State(state): State<Arc<AppState>>,
+    _auth: auth::AuthUser,
     Path(job_id): Path<String>,
     Query(q): Query<ExportQuery>,
 ) -> impl IntoResponse {
