@@ -2,9 +2,30 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Usuário autenticado
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct User {
+    pub id: String,
+    pub email: String,
+    pub password_hash: String,
+    pub created_at: String,
+}
+
+impl User {
+    pub fn new(email: String, password_hash: String) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            email,
+            password_hash,
+            created_at: Utc::now().to_rfc3339(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Job {
     pub id: String,
+    pub user_id: Option<String>,
     pub site_url: String,
     pub status: String,
     pub total_pages: i64,
@@ -19,6 +40,7 @@ impl Job {
         let now = Utc::now().to_rfc3339();
         Self {
             id: Uuid::new_v4().to_string(),
+            user_id: None,
             site_url,
             status: "pending".to_string(),
             total_pages: 0,

@@ -5,7 +5,7 @@ use sqlx::{
 };
 use std::str::FromStr;
 
-use crate::models::{Job, Page};
+use crate::models::{Job, Page, User};
 
 pub async fn create_pool(database_url: &str) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(database_url)?
@@ -38,6 +38,19 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             return Err(e.into());
         }
     }
+    // Migration 004: tabela users (idempotente via IF NOT EXISTS)
+    sqlx::query(include_str!("../../migrations/004_users.sql"))
+        .execute(pool)
+        .await?;
+    // Migration 005: coluna user_id em jobs + índice (pode já existir em bancos anteriores)
+    if let Err(e) = sqlx::query(include_str!("../../migrations/005_jobs_user_fk.sql"))
+        .execute(pool)
+        .await
+    {
+        if !e.to_string().contains("duplicate column name") {
+            return Err(e.into());
+        }
+    }
     Ok(())
 }
 
@@ -45,10 +58,11 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 
 pub async fn insert_job(pool: &SqlitePool, job: &Job) -> Result<()> {
     sqlx::query(
-        "INSERT INTO jobs (id, site_url, status, total_pages, processed_pages, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO jobs (id, user_id, site_url, status, total_pages, processed_pages, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&job.id)
+    .bind(&job.user_id)
     .bind(&job.site_url)
     .bind(&job.status)
     .bind(job.total_pages)
@@ -230,4 +244,45 @@ pub async fn set_llm_cache(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+// ─── Users ───────────────────────────────────────────────────────────────────
+
+pub async fn insert_user(pool: &SqlitePool, user: &User) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(&user.id)
+    .bind(&user.email)
+    .bind(&user.password_hash)
+    .bind(&user.created_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_user_by_email(pool: &SqlitePool, email: &str) -> Result<Option<User>> {
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = ?")
+        .bind(email)
+        .fetch_optional(pool)
+        .await?;
+    Ok(user)
+}
+
+pub async fn get_user_by_id(pool: &SqlitePool, id: &str) -> Result<Option<User>> {
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(user)
+}
+
+pub async fn list_jobs_for_user(pool: &SqlitePool, user_id: &str) -> Result<Vec<Job>> {
+    let jobs = sqlx::query_as::<_, Job>(
+        "SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT 20",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(jobs)
 }
