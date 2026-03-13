@@ -198,6 +198,7 @@ pub async fn register(
 #[derive(Deserialize)]
 pub struct LoginQuery {
     pub next: Option<String>,
+    pub reset: Option<String>,
 }
 
 pub async fn login_page(
@@ -213,11 +214,12 @@ pub async fn login_page(
         .as_deref()
         .filter(|s| s.starts_with('/'))
         .unwrap_or("");
+    let password_reset_ok = q.reset.as_deref() == Some("ok");
     let csrf_token = csrf::get_or_create_csrf_token(&session).await;
     let html = state
         .tmpl
         .get_template("login.html")
-        .and_then(|t| t.render(minijinja::context! { error => "", next => next, email => "", csrf_token => csrf_token }))
+        .and_then(|t| t.render(minijinja::context! { error => "", next => next, email => "", csrf_token => csrf_token, password_reset_ok => password_reset_ok }))
         .unwrap_or_else(|e| format!("Template error: {e}"));
     Html(html).into_response()
 }

@@ -18,6 +18,7 @@ use crate::{
 
 pub mod auth;
 pub mod csrf;
+pub mod password_reset;
 
 // ─── Tela inicial ─────────────────────────────────────────────────────────────
 

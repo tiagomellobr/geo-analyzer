@@ -111,6 +111,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/login", get(handlers::auth::login_page))
         .route("/login", post(handlers::auth::login))
         .route("/logout", post(handlers::auth::logout))
+        .route("/forgot-password", get(handlers::password_reset::forgot_password_page))
+        .route("/forgot-password", post(handlers::password_reset::forgot_password))
+        .route("/reset-password/:token", get(handlers::password_reset::reset_password_page))
+        .route("/reset-password/:token", post(handlers::password_reset::reset_password))
         .route("/analyze", post(handlers::post_analyze))
         .route("/jobs/:job_id", get(handlers::job_progress))
         .route("/jobs/:job_id/results", get(handlers::job_dashboard))
@@ -166,6 +170,16 @@ fn build_templates() -> Environment<'static> {
     env.add_template_owned(
         "register.html",
         include_str!("../templates/register.html").to_string(),
+    )
+    .unwrap();
+    env.add_template_owned(
+        "forgot_password.html",
+        include_str!("../templates/forgot_password.html").to_string(),
+    )
+    .unwrap();
+    env.add_template_owned(
+        "reset_password.html",
+        include_str!("../templates/reset_password.html").to_string(),
     )
     .unwrap();
 

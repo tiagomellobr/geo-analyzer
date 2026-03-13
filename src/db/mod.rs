@@ -51,6 +51,10 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             return Err(e.into());
         }
     }
+    // Migration 006: tabela password_reset_tokens (idempotente via IF NOT EXISTS)
+    sqlx::query(include_str!("../../migrations/006_reset_tokens.sql"))
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -285,4 +289,55 @@ pub async fn list_jobs_for_user(pool: &SqlitePool, user_id: &str) -> Result<Vec<
     .fetch_all(pool)
     .await?;
     Ok(jobs)
+}
+
+pub async fn update_user_password(pool: &SqlitePool, user_id: &str, password_hash: &str) -> Result<()> {
+    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+        .bind(password_hash)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+// ─── Password Reset Tokens ────────────────────────────────────────────────────
+
+pub async fn create_reset_token(pool: &SqlitePool, user_id: &str, token: &str, expires_at: &str) -> Result<()> {
+    // Invalida tokens anteriores não utilizados do mesmo usuário
+    sqlx::query("UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO password_reset_tokens (token, user_id, expires_at, used) VALUES (?, ?, ?, 0)",
+    )
+    .bind(token)
+    .bind(user_id)
+    .bind(expires_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_reset_token(pool: &SqlitePool, token: &str) -> Result<Option<(String, String, bool)>> {
+    // Retorna (user_id, expires_at, used)
+    let row = sqlx::query(
+        "SELECT user_id, expires_at, used FROM password_reset_tokens WHERE token = ?",
+    )
+    .bind(token)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r: sqlx::sqlite::SqliteRow| {
+        use sqlx::Row;
+        let used: i64 = r.get("used");
+        (r.get("user_id"), r.get("expires_at"), used != 0)
+    }))
+}
+
+pub async fn mark_reset_token_used(pool: &SqlitePool, token: &str) -> Result<()> {
+    sqlx::query("UPDATE password_reset_tokens SET used = 1 WHERE token = ?")
+        .bind(token)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
