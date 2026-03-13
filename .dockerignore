@@ -1,0 +1,5 @@
+target/
+geo_analyzer.db
+*.db-shm
+*.db-wal
+.env

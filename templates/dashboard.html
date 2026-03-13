@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+
+{% block title %}Resultados — {{ d.job.site_url }}{% endblock %}
+
+{% block content %}
+<!-- Header -->
+<div class="flex items-start justify-between mb-6 flex-wrap gap-4">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">Resultados GEO</h1>
+    <p class="text-gray-500 mt-1">{{ d.job.site_url }}</p>
+  </div>
+  <div class="flex gap-2">
+    <a
+      href="/jobs/{{ d.job.id }}/export?format=json"
+      class="text-sm bg-white border border-gray-200 hover:border-indigo-300 text-gray-700 px-4 py-2 rounded-lg transition-colors"
+    >↓ JSON</a>
+    <a
+      href="/jobs/{{ d.job.id }}/export?format=csv"
+      class="text-sm bg-white border border-gray-200 hover:border-indigo-300 text-gray-700 px-4 py-2 rounded-lg transition-colors"
+    >↓ CSV</a>
+    <a href="/" class="text-sm text-indigo-600 hover:underline px-4 py-2">← Nova análise</a>
+  </div>
+</div>
+
+<!-- Score geral -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+  <div class="bg-white rounded-xl border border-gray-200 p-5 text-center">
+    <div class="text-4xl font-bold {% if d.avg_score_pct >= 80 %}text-green-600{% elif d.avg_score_pct >= 50 %}text-yellow-500{% else %}text-red-500{% endif %} mb-1">
+      {{ d.avg_score_pct | round | int }}
+    </div>
+    <div class="text-gray-500 text-sm">GEO Score Médio</div>
+    <div class="mt-2 text-xs font-medium px-2 py-0.5 rounded-full inline-block
+      {% if d.avg_score_pct >= 80 %}bg-green-100 text-green-700
+      {% elif d.avg_score_pct >= 50 %}bg-yellow-100 text-yellow-700
+      {% else %}bg-red-100 text-red-700{% endif %}">
+      {% if d.avg_score_pct >= 80 %}Excelente{% elif d.avg_score_pct >= 50 %}Moderado{% else %}Crítico{% endif %}
+    </div>
+  </div>
+  <div class="bg-white rounded-xl border border-gray-200 p-5 text-center">
+    <div class="text-4xl font-bold text-indigo-600 mb-1">{{ d.pages | length }}</div>
+    <div class="text-gray-500 text-sm">Páginas Analisadas</div>
+  </div>
+  <div class="bg-white rounded-xl border border-gray-200 p-5 text-center">
+    <div class="text-4xl font-bold text-orange-500 mb-1">
+      {{ d.pages | selectattr("badge", "eq", "critical") | list | length }}
+    </div>
+    <div class="text-gray-500 text-sm">Páginas Críticas</div>
+    <div class="text-xs text-gray-400 mt-1">(score &lt; 50)</div>
+  </div>
+</div>
+
+<!-- 5 piores páginas -->
+{% if d.worst_pages %}
+<div class="bg-orange-50 border border-orange-200 rounded-xl p-5 mb-8">
+  <h2 class="font-bold text-orange-800 mb-3">🎯 5 Páginas com Maior Oportunidade de Melhoria</h2>
+  <div class="space-y-2">
+    {% for p in d.worst_pages %}
+    <a
+      href="/jobs/{{ d.job.id }}/pages/{{ p.id }}"
+      class="flex items-center justify-between bg-white rounded-lg px-4 py-2 border border-orange-100 hover:border-orange-300 transition-colors"
+    >
+      <div class="truncate mr-4">
+        <span class="font-medium text-gray-700">{{ p.title or p.url }}</span>
+        <span class="text-gray-400 text-xs ml-2 hidden sm:inline">{{ p.url }}</span>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        <div class="w-16 bg-gray-100 rounded-full h-2">
+          <div class="h-2 rounded-full bg-red-400" style="width: {{ p.geo_score_pct | round | int }}%"></div>
+        </div>
+        <span class="text-sm font-bold text-red-600 w-10 text-right">{{ p.geo_score_pct | round | int }}</span>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- Filtros e ordenação -->
+<div class="flex flex-wrap gap-2 mb-4">
+  <a href="?sort=score_asc" class="text-sm px-3 py-1 rounded-full border border-gray-200 hover:bg-gray-100 text-gray-600 transition-colors">↑ Score</a>
+  <a href="?sort=score_desc" class="text-sm px-3 py-1 rounded-full border border-gray-200 hover:bg-gray-100 text-gray-600 transition-colors">↓ Score</a>
+  <a href="?filter=critical" class="text-sm px-3 py-1 rounded-full border border-red-200 hover:bg-red-50 text-red-600 transition-colors">🔴 Crítico</a>
+  <a href="?filter=moderate" class="text-sm px-3 py-1 rounded-full border border-yellow-200 hover:bg-yellow-50 text-yellow-600 transition-colors">🟡 Moderado</a>
+  <a href="?filter=excellent" class="text-sm px-3 py-1 rounded-full border border-green-200 hover:bg-green-50 text-green-600 transition-colors">🟢 Excelente</a>
+  <a href="?" class="text-sm px-3 py-1 rounded-full border border-gray-200 hover:bg-gray-100 text-gray-500 transition-colors">Todas</a>
+</div>
+
+<!-- Tabela de páginas -->
+<div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+  <table class="w-full text-sm">
+    <thead class="bg-gray-50 border-b border-gray-200">
+      <tr>
+        <th class="text-left px-4 py-3 text-gray-600 font-medium">Página</th>
+        <th class="text-center px-4 py-3 text-gray-600 font-medium w-24">Score</th>
+        <th class="text-center px-4 py-3 text-gray-600 font-medium w-20 hidden md:table-cell">Status</th>
+        <th class="text-center px-4 py-3 text-gray-600 font-medium w-20 hidden md:table-cell">Palavras</th>
+        <th class="w-8"></th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-100">
+      {% for p in d.pages %}
+      <tr class="hover:bg-gray-50 transition-colors">
+        <td class="px-4 py-3">
+          <div class="font-medium text-gray-800 truncate max-w-xs">{{ p.title or "Sem título" }}</div>
+          <div class="text-gray-400 text-xs truncate max-w-xs">{{ p.url }}</div>
+        </td>
+        <td class="px-4 py-3">
+          <div class="flex flex-col items-center">
+            <div class="w-full bg-gray-100 rounded-full h-2 mb-1">
+              <div
+                class="h-2 rounded-full {% if p.badge == 'excellent' %}bg-green-400{% elif p.badge == 'moderate' %}bg-yellow-400{% else %}bg-red-400{% endif %}"
+                style="width: {{ p.geo_score_pct | round | int }}%"
+              ></div>
+            </div>
+            <span class="font-bold {% if p.badge == 'excellent' %}text-green-600{% elif p.badge == 'moderate' %}text-yellow-600{% else %}text-red-600{% endif %}">
+              {{ p.geo_score_pct | round | int }}
+            </span>
+          </div>
+        </td>
+        <td class="px-4 py-3 text-center hidden md:table-cell">
+          <span class="text-xs px-2 py-0.5 rounded-full font-medium
+            {% if p.badge == 'excellent' %}bg-green-100 text-green-700
+            {% elif p.badge == 'moderate' %}bg-yellow-100 text-yellow-700
+            {% else %}bg-red-100 text-red-700{% endif %}">
+            {% if p.badge == 'excellent' %}Excelente
+            {% elif p.badge == 'moderate' %}Moderado
+            {% else %}Crítico{% endif %}
+          </span>
+        </td>
+        <td class="px-4 py-3 text-center text-gray-500 hidden md:table-cell">{{ p.word_count }}</td>
+        <td class="px-4 py-3">
+          <a href="/jobs/{{ d.job.id }}/pages/{{ p.id }}" class="text-indigo-500 hover:text-indigo-700">→</a>
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="5" class="px-4 py-8 text-center text-gray-400">Nenhuma página encontrada com esses filtros.</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,18 @@
+services:
+  geo-analyzer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: geo-analyzer
+    ports:
+      - "3000:3000"
+    volumes:
+      - geo_data:/data
+    environment:
+      DATABASE_URL: "sqlite:///data/geo_analyzer.db"
+      BIND: "0.0.0.0:3000"
+      RUST_LOG: "geo_analyzer=info,tower_http=info"
+    restart: unless-stopped
+
+volumes:
+  geo_data:

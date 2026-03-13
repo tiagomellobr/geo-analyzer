@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+
+{% block title %}Analisando {{ job.site_url }} — GEO Analyzer{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto text-center">
+  <h1 class="text-2xl font-bold text-gray-900 mb-2">Analisando seu site</h1>
+  <p class="text-gray-500 mb-8">{{ job.site_url }}</p>
+
+  <!-- Card de progresso -->
+  <div
+    class="bg-white rounded-2xl shadow-sm border border-gray-200 p-8"
+    id="progress-card"
+    hx-ext="sse"
+    sse-connect="/jobs/{{ job.id }}/status"
+    sse-swap="none"
+    hx-on:sse-message="updateProgress(event)"
+  >
+    <!-- Status atual -->
+    <div id="status-icon" class="text-5xl mb-4">
+      {% if job.status == "pending" %}🕐
+      {% elif job.status == "crawling" %}🕸️
+      {% elif job.status == "analyzing" %}🔬
+      {% elif job.status == "completed" %}✅
+      {% else %}❌
+      {% endif %}
+    </div>
+
+    <div id="status-text" class="text-xl font-semibold text-gray-700 mb-2">
+      {% if job.status == "pending" %}Aguardando início...
+      {% elif job.status == "crawling" %}Descobrindo páginas...
+      {% elif job.status == "analyzing" %}Analisando páginas...
+      {% elif job.status == "completed" %}Análise concluída!
+      {% else %}Ocorreu um erro
+      {% endif %}
+    </div>
+
+    <!-- Barra de progresso -->
+    <div class="w-full bg-gray-100 rounded-full h-3 mb-3">
+      <div
+        id="progress-bar"
+        class="bg-indigo-500 h-3 rounded-full transition-all duration-500"
+        style="width: {% if job.total_pages > 0 %}{{ (job.processed_pages * 100 / job.total_pages) | int }}{% else %}0{% endif %}%"
+      ></div>
+    </div>
+
+    <div id="progress-numbers" class="text-gray-500 text-sm mb-6">
+      <span id="processed">{{ job.processed_pages }}</span> /
+      <span id="total">{{ job.total_pages }}</span> páginas
+    </div>
+
+    <!-- Steps visuais -->
+    <div class="flex justify-center gap-6 text-sm">
+      <div class="step {% if job.status != 'pending' %}text-indigo-600 font-medium{% else %}text-gray-400{% endif %}">
+        🔍 Descobrindo
+      </div>
+      <div class="text-gray-300">→</div>
+      <div class="step {% if job.status == 'analyzing' or job.status == 'completed' %}text-indigo-600 font-medium{% else %}text-gray-400{% endif %}">
+        ⬇️ Baixando
+      </div>
+      <div class="text-gray-300">→</div>
+      <div class="step {% if job.status == 'completed' %}text-green-600 font-medium{% elif job.status == 'analyzing' %}text-indigo-600 font-medium{% else %}text-gray-400{% endif %}">
+        🔬 Analisando
+      </div>
+      <div class="text-gray-300">→</div>
+      <div class="step {% if job.status == 'completed' %}text-green-600 font-medium animate-bounce{% else %}text-gray-400{% endif %}">
+        ✅ Pronto
+      </div>
+    </div>
+
+    {% if job.error_message %}
+    <div class="mt-4 bg-red-50 rounded-lg p-4 text-red-700 text-sm text-left">
+      <strong>Erro:</strong> {{ job.error_message }}
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Painel de conclusão (visível só quando completo) -->
+  <div
+    id="completion-panel"
+    class="{% if job.status != 'completed' %}hidden {% endif %}mt-6 bg-green-50 border border-green-200 rounded-2xl p-6 text-center"
+  >
+    <div class="text-4xl mb-3">🎉</div>
+    <p class="text-green-800 font-semibold text-lg mb-1">Análise finalizada!</p>
+    <p class="text-green-600 text-sm mb-5">
+      <span id="final-total">{{ job.total_pages }}</span> páginas analisadas com sucesso.
+    </p>
+    <a
+      id="results-btn"
+      href="/jobs/{{ job.id }}/results"
+      class="inline-block bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-6 py-3 rounded-xl transition-colors"
+    >
+      Ver Resultados →
+    </a>
+    <p class="text-xs text-gray-400 mt-3">Redirecionando automaticamente em <span id="countdown">3</span>s…</p>
+  </div>
+
+  <div class="mt-4">
+    <a href="/" class="text-indigo-500 hover:underline text-sm">← Voltar ao início</a>
+  </div>
+</div>
+
+<script>
+{% if job.status == 'completed' %}
+startCountdown();
+{% endif %}
+
+function showCompleted(totalPages) {
+  // Atualiza painel de progresso para estado final
+  document.getElementById('status-icon').textContent = '✅';
+  document.getElementById('status-text').textContent = 'Análise concluída!';
+  document.getElementById('progress-bar').style.width = '100%';
+  document.getElementById('progress-bar').classList.replace('bg-indigo-500', 'bg-green-500');
+
+  // Exibe painel de conclusão
+  document.getElementById('final-total').textContent = totalPages;
+  document.getElementById('completion-panel').classList.remove('hidden');
+  startCountdown();
+}
+
+function startCountdown() {
+  let seconds = 3;
+  const el = document.getElementById('countdown');
+  if (!el) return;
+  const timer = setInterval(() => {
+    seconds--;
+    el.textContent = seconds;
+    if (seconds <= 0) {
+      clearInterval(timer);
+      window.location.href = '/jobs/{{ job.id }}/results';
+    }
+  }, 1000);
+}
+
+function updateProgress(event) {
+  try {
+    const data = JSON.parse(event.detail.data);
+    const status = data.status;
+
+    const icons = {
+      pending: '🕐',
+      crawling: '🕸️',
+      analyzing: '🔬',
+      completed: '✅',
+      failed: '❌'
+    };
+    const texts = {
+      pending: 'Aguardando início...',
+      crawling: 'Descobrindo páginas no sitemap...',
+      analyzing: 'Analisando conteúdo das páginas...',
+      completed: 'Análise concluída!',
+      failed: 'Ocorreu um erro'
+    };
+
+    document.getElementById('status-icon').textContent = icons[status] || '⏳';
+    document.getElementById('status-text').textContent = texts[status] || status;
+
+    const total = data.total_pages || 0;
+    const processed = data.processed_pages || 0;
+    document.getElementById('processed').textContent = processed;
+    document.getElementById('total').textContent = total;
+
+    const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+    document.getElementById('progress-bar').style.width = pct + '%';
+
+    if (status === 'completed') {
+      showCompleted(total);
+    }
+
+    if (status === 'failed' && data.error_message) {
+      const existing = document.querySelector('#progress-card .error-msg');
+      if (!existing) {
+        const err = document.createElement('div');
+        err.className = 'error-msg mt-4 bg-red-50 rounded-lg p-4 text-red-700 text-sm text-left';
+        err.innerHTML = '<strong>Erro:</strong> ' + data.error_message;
+        document.getElementById('progress-card').appendChild(err);
+      }
+    }
+  } catch(e) {
+    console.error('Erro ao processar SSE:', e);
+  }
+}
+</script>
+{% endblock %}

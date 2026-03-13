@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title or page.url }} — GEO Analyzer{% endblock %}
+
+{% block content %}
+<!-- Breadcrumb -->
+<div class="mb-6 flex items-center gap-2 text-sm text-gray-500">
+  <a href="/" class="hover:text-indigo-600">Início</a>
+  <span>/</span>
+  <a href="/jobs/{{ job.id }}/results" class="hover:text-indigo-600">{{ job.site_url }}</a>
+  <span>/</span>
+  <span class="text-gray-800 font-medium truncate max-w-xs">{{ page.title or "Página" }}</span>
+</div>
+
+<!-- Header da página -->
+<div class="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+  <div class="flex items-start justify-between flex-wrap gap-4">
+    <div class="flex-1 min-w-0">
+      <h1 class="text-xl font-bold text-gray-900 mb-1">{{ page.title or "Sem título" }}</h1>
+      <a href="{{ page.url }}" target="_blank" class="text-indigo-500 hover:underline text-sm truncate block">
+        {{ page.url }} ↗
+      </a>
+      {% if page.meta_description %}
+      <p class="text-gray-500 text-sm mt-2">{{ page.meta_description }}</p>
+      {% endif %}
+    </div>
+    <div class="text-center shrink-0">
+      <div class="text-5xl font-bold
+        {% if geo_score_pct >= 80 %}text-green-600
+        {% elif geo_score_pct >= 50 %}text-yellow-500
+        {% else %}text-red-500{% endif %}">
+        {{ geo_score_pct | round | int }}
+      </div>
+      <div class="text-gray-500 text-xs mt-1">GEO Score</div>
+      <div class="mt-1 text-xs font-medium px-2 py-0.5 rounded-full inline-block
+        {% if geo_score_pct >= 80 %}bg-green-100 text-green-700
+        {% elif geo_score_pct >= 50 %}bg-yellow-100 text-yellow-700
+        {% else %}bg-red-100 text-red-700{% endif %}">
+        {% if geo_score_pct >= 80 %}Excelente{% elif geo_score_pct >= 50 %}Moderado{% else %}Crítico{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="mt-4 flex flex-wrap gap-4 text-sm text-gray-500 border-t border-gray-100 pt-4">
+    <span>📝 {{ page.word_count }} palavras</span>
+    {% if page.has_og_tags %}<span class="text-green-600">✓ Open Graph</span>{% else %}<span class="text-red-400">✗ Open Graph</span>{% endif %}
+    {% if page.has_schema_markup %}<span class="text-green-600">✓ Schema Markup</span>{% else %}<span class="text-red-400">✗ Schema Markup</span>{% endif %}
+  </div>
+</div>
+
+<!-- Score por critério -->
+<div class="mb-8">
+  <h2 class="font-bold text-gray-800 mb-4 text-lg">📊 Score por Critério</h2>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+
+    {% macro score_row(label, score, impact) %}
+    {% set pct = (score * 100) | round | int %}
+    <div class="bg-white rounded-xl border border-gray-200 p-4">
+      <div class="flex items-center justify-between mb-2">
+        <div>
+          <span class="font-medium text-gray-700">{{ label }}</span>
+          {% if impact %}<span class="text-xs text-indigo-500 ml-2">{{ impact }}</span>{% endif %}
+        </div>
+        <span class="font-bold {% if pct >= 80 %}text-green-600{% elif pct >= 50 %}text-yellow-600{% else %}text-red-500{% endif %}">
+          {{ pct }}
+        </span>
+      </div>
+      <div class="w-full bg-gray-100 rounded-full h-2">
+        <div
+          class="h-2 rounded-full {% if pct >= 80 %}bg-green-400{% elif pct >= 50 %}bg-yellow-400{% else %}bg-red-400{% endif %}"
+          style="width: {{ pct }}%"
+        ></div>
+      </div>
+    </div>
+    {% endmacro %}
+
+    {{ score_row("📚 Citações de Fontes", page.score_cite_sources, "+25%") }}
+    {{ score_row("💬 Citações Diretas", page.score_quotation_addition, "+41%") }}
+    {{ score_row("📊 Dados e Estatísticas", page.score_statistics_addition, "+30%") }}
+    {{ score_row("✍️ Fluência e Legibilidade", page.score_fluency, "+27%") }}
+    {{ score_row("🎯 Tom Autoritativo", page.score_authoritative_tone, "+10%") }}
+    {{ score_row("🔬 Termos Técnicos", page.score_technical_terms, "+17%") }}
+    {{ score_row("💡 Clareza e Acessibilidade", page.score_easy_to_understand, "+14%") }}
+    {{ score_row("🏗️ Estrutura de Conteúdo", page.score_content_structure, "") }}
+    {{ score_row("🏷️ Qualidade dos Metadados", page.score_metadata_quality, "") }}
+    {{ score_row("🔖 Schema Markup", page.score_schema_markup, "") }}
+    {{ score_row("📏 Profundidade do Conteúdo", page.score_content_depth, "") }}
+  </div>
+</div>
+
+<!-- Recomendações -->
+{% if recommendations %}
+<div>
+  <h2 class="font-bold text-gray-800 mb-4 text-lg">💡 Recomendações de Melhoria</h2>
+  <div class="space-y-3">
+    {% for rec in recommendations %}
+    <div class="bg-amber-50 border border-amber-200 rounded-xl p-5">
+      <div class="flex items-start gap-3">
+        <span class="text-amber-500 mt-0.5">⚠</span>
+        <div>
+          <div class="flex items-center gap-2 mb-1">
+            <span class="font-semibold text-gray-800">{{ rec.criterion }}</span>
+            {% if rec.impact != "Baixa" %}
+            <span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
+              Impacto: {{ rec.impact }}
+            </span>
+            {% endif %}
+          </div>
+          <p class="text-gray-700 text-sm">{{ rec.message }}</p>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+<div class="bg-green-50 border border-green-200 rounded-xl p-6 text-center">
+  <div class="text-3xl mb-2">🎉</div>
+  <p class="text-green-700 font-medium">Excelente! Esta página está bem otimizada para motores generativos.</p>
+</div>
+{% endif %}
+
+<div class="mt-8">
+  <a href="/jobs/{{ job.id }}/results" class="text-indigo-500 hover:underline text-sm">← Voltar ao dashboard</a>
+</div>
+{% endblock %}
