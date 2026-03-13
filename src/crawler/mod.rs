@@ -70,25 +70,36 @@ const SITEMAP_FALLBACK_PATHS: &[&str] = &[
     "/sitemaps/sitemap.xml",
 ];
 
+/// Resultado da descoberta de URLs, incluindo possíveis avisos
+pub struct DiscoveryResult {
+    pub urls: Vec<String>,
+    /// Aviso informativo quando nenhum sitemap foi encontrado,
+    /// ou quando parte dos sitemaps falhou ao carregar.
+    pub warning: Option<String>,
+}
+
 /// Descobre todas as URLs do sitemap (incluindo sitemaps aninhados)
-pub async fn discover_urls(client: &Client, site_url: &str) -> Result<Vec<String>> {
+pub async fn discover_urls(client: &Client, site_url: &str) -> Result<DiscoveryResult> {
     let base = Url::parse(site_url)?;
 
     // 1. Descobrir sitemaps via robots.txt
-    let mut sitemaps_from_robots = discover_sitemaps_from_robots(client, &base).await;
+    let sitemaps_from_robots = discover_sitemaps_from_robots(client, &base).await;
+    let from_robots = !sitemaps_from_robots.is_empty();
 
     // 2. Se robots.txt não declarou nenhum sitemap, tentar paths comuns
-    if sitemaps_from_robots.is_empty() {
-        for path in SITEMAP_FALLBACK_PATHS {
-            if let Ok(u) = base.join(path) {
-                sitemaps_from_robots.push(u.to_string());
-            }
-        }
-    }
+    let mut sitemap_queue: Vec<String> = if from_robots {
+        sitemaps_from_robots
+    } else {
+        SITEMAP_FALLBACK_PATHS
+            .iter()
+            .filter_map(|path| base.join(path).ok().map(|u| u.to_string()))
+            .collect()
+    };
 
     let mut all_urls = Vec::new();
-    let mut sitemap_queue = sitemaps_from_robots;
     let mut visited_sitemaps = std::collections::HashSet::new();
+    let mut sitemap_found = false;
+    let mut sitemap_errors = 0usize;
 
     while let Some(sm_url) = sitemap_queue.pop() {
         if visited_sitemaps.contains(&sm_url) {
@@ -98,10 +109,14 @@ pub async fn discover_urls(client: &Client, site_url: &str) -> Result<Vec<String
 
         match fetch_sitemap(client, &sm_url).await {
             Ok(result) => {
+                if !result.page_urls.is_empty() || !result.sitemap_urls.is_empty() {
+                    sitemap_found = true;
+                }
                 all_urls.extend(result.page_urls);
                 sitemap_queue.extend(result.sitemap_urls);
             }
             Err(e) => {
+                sitemap_errors += 1;
                 tracing::warn!("Falha ao buscar sitemap {}: {}", sm_url, e);
             }
         }
@@ -124,12 +139,35 @@ pub async fn discover_urls(client: &Client, site_url: &str) -> Result<Vec<String
             .unwrap_or(false)
     });
 
-    if all_urls.is_empty() {
-        // fallback: adicionar a própria URL raiz
+    // Construir aviso conforme o caso
+    let warning = if !sitemap_found && all_urls.is_empty() {
+        let msg = if from_robots {
+            format!(
+                "Os sitemaps declarados no robots.txt falharam ao carregar ({} erro(s)). Apenas a URL raiz será analisada.",
+                sitemap_errors
+            )
+        } else {
+            "Nenhum sitemap.xml encontrado nos caminhos padrão. Apenas a URL raiz será analisada.".to_string()
+        };
         all_urls.push(site_url.to_string());
+        Some(msg)
+    } else if sitemap_errors > 0 {
+        Some(format!(
+            "{} sitemap(s) falharam ao carregar e foram ignorados.",
+            sitemap_errors
+        ))
+    } else {
+        None
+    };
+
+    if let Some(ref w) = warning {
+        tracing::warn!("{}", w);
     }
 
-    Ok(all_urls)
+    Ok(DiscoveryResult {
+        urls: all_urls,
+        warning,
+    })
 }
 
 struct SitemapResult {
@@ -259,20 +297,65 @@ pub async fn crawl_pages(client: &Client, urls: Vec<String>) -> Vec<CrawledPage>
 }
 
 pub async fn fetch_page(client: &Client, url: &str) -> Result<CrawledPage> {
-    let resp = client.get(url).send().await?.error_for_status()?;
-    // Aceita somente HTML
-    let content_type = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    if !content_type.contains("text/html") {
-        return Err(anyhow!("Não é HTML: {}", content_type));
+    const MAX_RETRIES: u32 = 2;
+    let mut attempt = 0u32;
+
+    loop {
+        let resp = client.get(url).send().await?;
+        let status = resp.status();
+
+        // 429 Too Many Requests — respeitar Retry-After ou aguardar 3s
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            if attempt < MAX_RETRIES {
+                let wait_secs = resp
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(3)
+                    .min(30);
+                attempt += 1;
+                tracing::info!(
+                    "Rate limited em {} — aguardando {}s (tentativa {}/{})",
+                    url, wait_secs, attempt, MAX_RETRIES
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+                continue;
+            }
+            return Err(anyhow!(
+                "Rate limiting persistente em {} após {} tentativas (HTTP 429)",
+                url, attempt
+            ));
+        }
+
+        // 5xx Server Error — uma retentativa após 2s
+        if status.is_server_error() && attempt < 1 {
+            attempt += 1;
+            tracing::warn!(
+                "Erro {} em {} — retentando em 2s (tentativa {})",
+                status.as_u16(), url, attempt
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            continue;
+        }
+
+        // Outros erros HTTP
+        let resp = resp.error_for_status()?;
+
+        // Aceita somente HTML
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        if !content_type.contains("text/html") {
+            return Err(anyhow!("Não é HTML: {}", content_type));
+        }
+        let html = resp.text().await?;
+        let page = parse_html(url, &html);
+        return Ok(page);
     }
-    let html = resp.text().await?;
-    let page = parse_html(url, &html);
-    Ok(page)
 }
 
 pub fn parse_html(url: &str, html: &str) -> CrawledPage {

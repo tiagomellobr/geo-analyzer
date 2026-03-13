@@ -142,6 +142,22 @@ pub struct JobDashboard {
     pub job: Job,
     pub avg_score: f64,
     pub avg_score_pct: f64,
+    /// Total de páginas no job (para o card de métricas)
+    pub total_pages: i64,
+    /// Número de páginas críticas (score < 50) no total
+    pub critical_count: i64,
+    /// Páginas da página atual (após filtro + ordenação + paginação)
     pub pages: Vec<PageSummary>,
+    /// 5 piores páginas globais (independe de filtro)
     pub worst_pages: Vec<PageSummary>,
+    /// Número de páginas após aplicar o filtro
+    pub filtered_count: i64,
+    // Paginação
+    pub current_page: i64,
+    pub total_pg_count: i64,
+    pub has_prev: bool,
+    pub has_next: bool,
+    // Estado dos controles atuais (para construir URLs)
+    pub current_sort: String,
+    pub current_filter: String,
 }

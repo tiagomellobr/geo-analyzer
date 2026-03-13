@@ -209,7 +209,10 @@ pub async fn job_status_sse(
 pub struct DashboardQuery {
     pub sort: Option<String>,
     pub filter: Option<String>,
+    pub page: Option<i64>,
 }
+
+const PAGE_SIZE: i64 = 25;
 
 pub async fn job_dashboard(
     State(state): State<Arc<AppState>>,
@@ -237,43 +240,70 @@ pub async fn job_dashboard(
         .await
         .unwrap_or_default();
 
-    let mut summaries: Vec<PageSummary> = pages.iter().map(PageSummary::from).collect();
+    let all_summaries: Vec<PageSummary> = pages.iter().map(PageSummary::from).collect();
 
-    // Filtrar
-    if let Some(ref f) = q.filter {
-        match f.as_str() {
-            "critical" => summaries.retain(|p| p.geo_score_pct < 50.0),
-            "moderate" => summaries.retain(|p| p.geo_score_pct >= 50.0 && p.geo_score_pct < 80.0),
-            "excellent" => summaries.retain(|p| p.geo_score_pct >= 80.0),
-            _ => {}
-        }
-    }
-
-    // Ordenar
-    match q.sort.as_deref() {
-        Some("score_asc") => summaries.sort_by(|a, b| a.geo_score.partial_cmp(&b.geo_score).unwrap()),
-        Some("score_desc") | None => {
-            summaries.sort_by(|a, b| b.geo_score.partial_cmp(&a.geo_score).unwrap())
-        }
-        _ => {}
-    }
-
+    // Estatísticas globais (independem de filtro/paginação)
+    let total_pages_count = all_summaries.len() as i64;
+    let critical_count = all_summaries.iter().filter(|p| p.badge == "critical").count() as i64;
     let avg_score = if !pages.is_empty() {
         pages.iter().map(|p| p.geo_score).sum::<f64>() / pages.len() as f64
     } else {
         0.0
     };
 
-    let mut worst = summaries.clone();
+    // 5 piores páginas globais (antes de qualquer filtro)
+    let mut worst = all_summaries.clone();
     worst.sort_by(|a, b| a.geo_score.partial_cmp(&b.geo_score).unwrap());
     worst.truncate(5);
+
+    // Filtrar
+    let mut filtered = all_summaries.clone();
+    if let Some(ref f) = q.filter {
+        match f.as_str() {
+            "critical" => filtered.retain(|p| p.geo_score_pct < 50.0),
+            "moderate" => filtered.retain(|p| p.geo_score_pct >= 50.0 && p.geo_score_pct < 80.0),
+            "excellent" => filtered.retain(|p| p.geo_score_pct >= 80.0),
+            _ => {}
+        }
+    }
+
+    // Ordenar
+    match q.sort.as_deref() {
+        Some("score_asc") => {
+            filtered.sort_by(|a, b| a.geo_score.partial_cmp(&b.geo_score).unwrap())
+        }
+        _ => filtered.sort_by(|a, b| b.geo_score.partial_cmp(&a.geo_score).unwrap()),
+    }
+
+    // Paginação
+    let filtered_count = filtered.len() as i64;
+    let total_pg_count = ((filtered_count + PAGE_SIZE - 1) / PAGE_SIZE).max(1);
+    let page_num = q.page.unwrap_or(1).max(1).min(total_pg_count);
+    let offset = ((page_num - 1) * PAGE_SIZE) as usize;
+    let paged: Vec<PageSummary> = filtered
+        .into_iter()
+        .skip(offset)
+        .take(PAGE_SIZE as usize)
+        .collect();
+
+    let current_sort = q.sort.clone().unwrap_or_default();
+    let current_filter = q.filter.clone().unwrap_or_default();
 
     let dashboard = JobDashboard {
         job,
         avg_score,
         avg_score_pct: avg_score * 100.0,
-        pages: summaries,
+        total_pages: total_pages_count,
+        critical_count,
+        pages: paged,
         worst_pages: worst,
+        filtered_count,
+        current_page: page_num,
+        total_pg_count,
+        has_prev: page_num > 1,
+        has_next: page_num < total_pg_count,
+        current_sort,
+        current_filter,
     };
 
     let html = state

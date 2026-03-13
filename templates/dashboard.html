@@ -22,6 +22,14 @@
   </div>
 </div>
 
+<!-- Aviso de sitemap (quando nenhum sitemap foi encontrado ou houve erros parciais) -->
+{% if d.job.error_message %}
+<div class="mb-6 bg-yellow-50 border border-yellow-200 rounded-xl px-5 py-3 flex items-start gap-3">
+  <span class="text-yellow-500 text-lg leading-none mt-0.5">⚠️</span>
+  <p class="text-yellow-800 text-sm">{{ d.job.error_message }}</p>
+</div>
+{% endif %}
+
 <!-- Score geral -->
 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
   <div class="bg-white rounded-xl border border-gray-200 p-5 text-center">
@@ -37,13 +45,11 @@
     </div>
   </div>
   <div class="bg-white rounded-xl border border-gray-200 p-5 text-center">
-    <div class="text-4xl font-bold text-indigo-600 mb-1">{{ d.pages | length }}</div>
+    <div class="text-4xl font-bold text-indigo-600 mb-1">{{ d.total_pages }}</div>
     <div class="text-gray-500 text-sm">Páginas Analisadas</div>
   </div>
   <div class="bg-white rounded-xl border border-gray-200 p-5 text-center">
-    <div class="text-4xl font-bold text-orange-500 mb-1">
-      {{ d.pages | selectattr("badge", "eq", "critical") | list | length }}
-    </div>
+    <div class="text-4xl font-bold text-orange-500 mb-1">{{ d.critical_count }}</div>
     <div class="text-gray-500 text-sm">Páginas Críticas</div>
     <div class="text-xs text-gray-400 mt-1">(score &lt; 50)</div>
   </div>
@@ -75,14 +81,46 @@
 </div>
 {% endif %}
 
-<!-- Filtros e ordenação -->
+<!-- Filtros e ordenação (URLs preservam o estado combinado) -->
 <div class="flex flex-wrap gap-2 mb-4">
-  <a href="?sort=score_asc" class="text-sm px-3 py-1 rounded-full border border-gray-200 hover:bg-gray-100 text-gray-600 transition-colors">↑ Score</a>
-  <a href="?sort=score_desc" class="text-sm px-3 py-1 rounded-full border border-gray-200 hover:bg-gray-100 text-gray-600 transition-colors">↓ Score</a>
-  <a href="?filter=critical" class="text-sm px-3 py-1 rounded-full border border-red-200 hover:bg-red-50 text-red-600 transition-colors">🔴 Crítico</a>
-  <a href="?filter=moderate" class="text-sm px-3 py-1 rounded-full border border-yellow-200 hover:bg-yellow-50 text-yellow-600 transition-colors">🟡 Moderado</a>
-  <a href="?filter=excellent" class="text-sm px-3 py-1 rounded-full border border-green-200 hover:bg-green-50 text-green-600 transition-colors">🟢 Excelente</a>
-  <a href="?" class="text-sm px-3 py-1 rounded-full border border-gray-200 hover:bg-gray-100 text-gray-500 transition-colors">Todas</a>
+  {% set sf = d.current_filter %}
+  <a href="?sort=score_asc{% if sf %}&filter={{ sf }}{% endif %}"
+     class="text-sm px-3 py-1 rounded-full border transition-colors
+       {% if d.current_sort == 'score_asc' %}bg-indigo-100 border-indigo-300 text-indigo-700 font-medium{% else %}border-gray-200 hover:bg-gray-100 text-gray-600{% endif %}">
+    ↑ Score
+  </a>
+  <a href="?sort=score_desc{% if sf %}&filter={{ sf }}{% endif %}"
+     class="text-sm px-3 py-1 rounded-full border transition-colors
+       {% if d.current_sort == '' or d.current_sort == 'score_desc' %}bg-indigo-100 border-indigo-300 text-indigo-700 font-medium{% else %}border-gray-200 hover:bg-gray-100 text-gray-600{% endif %}">
+    ↓ Score
+  </a>
+  {% set ss = d.current_sort %}
+  <a href="?filter=critical{% if ss %}&sort={{ ss }}{% endif %}"
+     class="text-sm px-3 py-1 rounded-full border transition-colors
+       {% if d.current_filter == 'critical' %}bg-red-100 border-red-400 text-red-700 font-medium{% else %}border-red-200 hover:bg-red-50 text-red-600{% endif %}">
+    🔴 Crítico
+  </a>
+  <a href="?filter=moderate{% if ss %}&sort={{ ss }}{% endif %}"
+     class="text-sm px-3 py-1 rounded-full border transition-colors
+       {% if d.current_filter == 'moderate' %}bg-yellow-100 border-yellow-400 text-yellow-700 font-medium{% else %}border-yellow-200 hover:bg-yellow-50 text-yellow-600{% endif %}">
+    🟡 Moderado
+  </a>
+  <a href="?filter=excellent{% if ss %}&sort={{ ss }}{% endif %}"
+     class="text-sm px-3 py-1 rounded-full border transition-colors
+       {% if d.current_filter == 'excellent' %}bg-green-100 border-green-400 text-green-700 font-medium{% else %}border-green-200 hover:bg-green-50 text-green-600{% endif %}">
+    🟢 Excelente
+  </a>
+  <a href="{% if ss %}?sort={{ ss }}{% else %}?{% endif %}"
+     class="text-sm px-3 py-1 rounded-full border transition-colors
+       {% if d.current_filter == '' %}bg-gray-100 border-gray-400 text-gray-700 font-medium{% else %}border-gray-200 hover:bg-gray-100 text-gray-500{% endif %}">
+    Todas
+  </a>
+
+  {% if d.current_filter %}
+  <span class="text-xs text-gray-400 self-center ml-2">
+    {{ d.filtered_count }} de {{ d.total_pages }} páginas
+  </span>
+  {% endif %}
 </div>
 
 <!-- Tabela de páginas -->
@@ -140,4 +178,57 @@
     </tbody>
   </table>
 </div>
+
+<!-- Paginação -->
+{% if d.total_pg_count > 1 %}
+<div class="flex items-center justify-between mt-4">
+  <!-- Info -->
+  <span class="text-sm text-gray-500">
+    Página {{ d.current_page }} de {{ d.total_pg_count }}
+    <span class="text-gray-400">({{ d.filtered_count }} páginas)</span>
+  </span>
+
+  <!-- Controles -->
+  <div class="flex items-center gap-1">
+    <!-- Anterior -->
+    {% if d.has_prev %}
+    <a href="?page={{ d.current_page - 1 }}{% if d.current_sort %}&sort={{ d.current_sort }}{% endif %}{% if d.current_filter %}&filter={{ d.current_filter }}{% endif %}"
+       class="px-3 py-1.5 text-sm rounded-lg border border-gray-200 hover:bg-gray-100 text-gray-600 transition-colors">
+      ← Anterior
+    </a>
+    {% else %}
+    <span class="px-3 py-1.5 text-sm rounded-lg border border-gray-100 text-gray-300 cursor-not-allowed">← Anterior</span>
+    {% endif %}
+
+    <!-- Números de página (máx. 7 visíveis) -->
+    {% set cp = d.current_page %}
+    {% set tp = d.total_pg_count %}
+    {% set start = [cp - 3, 1] | max %}
+    {% set end = [start + 6, tp] | min %}
+    {% set start = [end - 6, 1] | max %}
+
+    {% for pg in range(start, end + 1) %}
+      {% if pg == cp %}
+      <span class="px-3 py-1.5 text-sm rounded-lg bg-indigo-600 text-white font-medium">{{ pg }}</span>
+      {% else %}
+      <a href="?page={{ pg }}{% if d.current_sort %}&sort={{ d.current_sort }}{% endif %}{% if d.current_filter %}&filter={{ d.current_filter }}{% endif %}"
+         class="px-3 py-1.5 text-sm rounded-lg border border-gray-200 hover:bg-gray-100 text-gray-600 transition-colors">
+        {{ pg }}
+      </a>
+      {% endif %}
+    {% endfor %}
+
+    <!-- Próxima -->
+    {% if d.has_next %}
+    <a href="?page={{ d.current_page + 1 }}{% if d.current_sort %}&sort={{ d.current_sort }}{% endif %}{% if d.current_filter %}&filter={{ d.current_filter }}{% endif %}"
+       class="px-3 py-1.5 text-sm rounded-lg border border-gray-200 hover:bg-gray-100 text-gray-600 transition-colors">
+      Próxima →
+    </a>
+    {% else %}
+    <span class="px-3 py-1.5 text-sm rounded-lg border border-gray-100 text-gray-300 cursor-not-allowed">Próxima →</span>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
 {% endblock %}
+

@@ -34,8 +34,8 @@ pub async fn run_analysis(state: Arc<AppState>, job_id: String) {
     };
 
     // Descobrir URLs do sitemap
-    let urls = match crawler::discover_urls(&client, &job.site_url).await {
-        Ok(u) => u,
+    let discovery = match crawler::discover_urls(&client, &job.site_url).await {
+        Ok(d) => d,
         Err(e) => {
             let msg = format!("Erro ao descobrir URLs: {e}");
             let _ = db::update_job_status(pool, &job_id, "failed", 0, 0, Some(&msg)).await;
@@ -43,6 +43,9 @@ pub async fn run_analysis(state: Arc<AppState>, job_id: String) {
             return;
         }
     };
+
+    let urls = discovery.urls;
+    let sitemap_warning = discovery.warning;
 
     let total = urls.len() as i64;
     let _ = db::update_job_status(pool, &job_id, "analyzing", total, 0, None).await;
@@ -111,9 +114,10 @@ pub async fn run_analysis(state: Arc<AppState>, job_id: String) {
         send_event(&state, &job_id, "analyzing", actual_total, processed, None);
     }
 
-    // Concluído
-    let _ = db::update_job_status(pool, &job_id, "completed", actual_total, processed, None).await;
-    send_event(&state, &job_id, "completed", actual_total, processed, None);
+    // Concluído (inclui aviso de sitemap, se houver)
+    let warning_ref = sitemap_warning.as_deref();
+    let _ = db::update_job_status(pool, &job_id, "completed", actual_total, processed, warning_ref).await;
+    send_event(&state, &job_id, "completed", actual_total, processed, sitemap_warning);
 }
 
 fn send_event(
