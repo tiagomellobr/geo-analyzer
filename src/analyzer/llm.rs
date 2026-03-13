@@ -174,9 +174,81 @@ impl LlmClient {
 
         Ok(extract_analysis(parsed))
     }
+
+    /// Gera um resumo diagnóstico em texto (~3–5 frases) para uma página,
+    /// com base nos scores dos critérios GEO e no título da página.
+    ///
+    /// Retorna `None` em caso de falha, para que o chamador possa prosseguir
+    /// sem interromper a análise.
+    pub async fn generate_summary(
+        &self,
+        title: &str,
+        scores: &crate::models::GeoScores,
+    ) -> Option<String> {
+        let prompt = build_summary_prompt(title, scores);
+
+        #[derive(serde::Serialize)]
+        struct SummaryRequest<'a> {
+            model: &'a str,
+            prompt: &'a str,
+            stream: bool,
+        }
+
+        let req = SummaryRequest {
+            model: &self.model,
+            prompt: &prompt,
+            stream: false,
+        };
+
+        let resp = self
+            .client
+            .post(format!("{}/api/generate", self.host))
+            .json(&req)
+            .send()
+            .await
+            .ok()?;
+
+        if !resp.status().is_success() {
+            return None;
+        }
+
+        let body: OllamaResponse = resp.json().await.ok()?;
+        let summary = body.response.trim().to_string();
+        if summary.is_empty() { None } else { Some(summary) }
+    }
 }
 
 // ─── Helpers privados ─────────────────────────────────────────────────────────
+
+fn build_summary_prompt(title: &str, scores: &crate::models::GeoScores) -> String {
+    let pct = |v: f64| (v * 100.0).round() as i64;
+    format!(
+        r#"Você é um especialista em GEO (Generative Engine Optimization). Com base nos scores abaixo para a página "{title}", escreva um diagnóstico conciso em português com 3 a 5 frases descrevendo os pontos fortes e os aspectos críticos que precisam de atenção. Seja direto e objetivo. NÃO use tópicos, listas ou formatação — apenas texto corrido.
+
+Scores (0 a 100):
+- Citações de Fontes: {cite}
+- Citações Diretas: {quot}
+- Dados e Estatísticas: {stats}
+- Fluência: {fluency}
+- Tom Autoritativo: {auth}
+- Termos Técnicos: {tech}
+- Clareza e Acessibilidade: {easy}
+- Estrutura de Conteúdo: {struct_}
+- Qualidade dos Metadados: {meta}
+
+Escreva apenas o diagnóstico em texto corrido:"#,
+        title = title,
+        cite = pct(scores.cite_sources),
+        quot = pct(scores.quotation_addition),
+        stats = pct(scores.statistics_addition),
+        fluency = pct(scores.fluency),
+        auth = pct(scores.authoritative_tone),
+        tech = pct(scores.technical_terms),
+        easy = pct(scores.easy_to_understand),
+        struct_ = pct(scores.content_structure),
+        meta = pct(scores.metadata_quality),
+    )
+}
 
 fn build_prompt(excerpt: &str) -> String {
     format!(

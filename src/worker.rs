@@ -75,8 +75,19 @@ pub async fn run_analysis(state: Arc<AppState>, job_id: String) {
                 }
             }
         }
+
         let scores = &result.scores;
         let geo_score = scores.global_score();
+
+        // Gerar resumo LLM para a página
+        let page_title = crawled.title.as_deref().unwrap_or("Sem título");
+        let llm_summary = state
+            .llm_client
+            .generate_summary(page_title, scores)
+            .await;
+        if llm_summary.is_none() {
+            tracing::debug!("Resumo LLM não gerado para {}", crawled.url);
+        }
 
         let page = Page {
             id: Uuid::new_v4().to_string(),
@@ -102,6 +113,7 @@ pub async fn run_analysis(state: Arc<AppState>, job_id: String) {
             has_og_tags: result.has_og_tags as i64,
             has_schema_markup: result.has_schema_markup as i64,
             analyzed_at: chrono::Utc::now().to_rfc3339(),
+            llm_summary,
         };
 
         if let Err(e) = db::insert_page(pool, &page).await {

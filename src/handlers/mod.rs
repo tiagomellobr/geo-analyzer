@@ -379,10 +379,10 @@ pub async fn export_results(
                 format!("\"{}\"", s.replace('"', "\"\""))
             }
 
-            let mut csv = "url,title,geo_score,word_count,cite_sources,quotation,statistics,fluency,authoritative,technical,easy_to_understand,content_structure,metadata\n".to_string();
+            let mut csv = "url,title,geo_score,word_count,cite_sources,quotation,statistics,fluency,authoritative,technical,easy_to_understand,content_structure,metadata,llm_summary\n".to_string();
             for p in &pages {
                 csv.push_str(&format!(
-                    "{},{},{:.1},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2}\n",
+                    "{},{},{:.1},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{}\n",
                     csv_field(&p.url),
                     csv_field(p.title.as_deref().unwrap_or("")),
                     p.geo_score * 100.0,
@@ -396,6 +396,7 @@ pub async fn export_results(
                     p.score_easy_to_understand,
                     p.score_content_structure,
                     p.score_metadata_quality,
+                    csv_field(p.llm_summary.as_deref().unwrap_or("")),
                 ));
             }
             let mut headers = HeaderMap::new();

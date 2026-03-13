@@ -28,6 +28,9 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     sqlx::query(include_str!("../../migrations/002_llm_cache.sql"))
         .execute(pool)
         .await?;
+    sqlx::query(include_str!("../../migrations/003_llm_summary.sql"))
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -99,8 +102,9 @@ pub async fn insert_page(pool: &SqlitePool, page: &Page) -> Result<()> {
             score_fluency, score_authoritative_tone, score_technical_terms,
             score_easy_to_understand, score_content_structure, score_metadata_quality,
             score_schema_markup, score_content_depth, geo_score,
-            recommendations, meta_description, has_og_tags, has_schema_markup, analyzed_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            recommendations, meta_description, has_og_tags, has_schema_markup, analyzed_at,
+            llm_summary
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .bind(&page.id)
     .bind(&page.job_id)
@@ -124,6 +128,7 @@ pub async fn insert_page(pool: &SqlitePool, page: &Page) -> Result<()> {
     .bind(page.has_og_tags)
     .bind(page.has_schema_markup)
     .bind(&page.analyzed_at)
+    .bind(&page.llm_summary)
     .execute(pool)
     .await?;
     Ok(())

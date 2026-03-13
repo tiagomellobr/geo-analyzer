@@ -54,6 +54,7 @@ pub struct Page {
     pub has_og_tags: i64,
     pub has_schema_markup: i64,
     pub analyzed_at: String,
+    pub llm_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
