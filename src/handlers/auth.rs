@@ -98,11 +98,11 @@ pub async fn register(
     session: Session,
     Form(form): Form<RegisterForm>,
 ) -> impl IntoResponse {
-    fn render_error(state: &AppState, msg: &str) -> axum::response::Response {
+    fn render_error(state: &AppState, msg: &str, csrf_token: &str, email: &str) -> axum::response::Response {
         let html = state
             .tmpl
             .get_template("register.html")
-            .and_then(|t| t.render(minijinja::context! { error => msg }))
+            .and_then(|t| t.render(minijinja::context! { error => msg, csrf_token => csrf_token, email => email }))
             .unwrap_or_else(|e| format!("Template error: {e}"));
         Html(html).into_response()
     }
@@ -116,25 +116,31 @@ pub async fn register(
             .into_response();
     }
 
+    // Gera (ou reutiliza) o token CSRF para re-renderização de erros
+    let csrf_token = csrf::get_or_create_csrf_token(&session).await;
+
     let email = form.email.trim().to_lowercase();
 
     // Validações básicas
     if email.is_empty() || !email.contains('@') || !email.contains('.') {
-        return render_error(&state, "E-mail inválido.");
+        return render_error(&state, "E-mail inválido.", &csrf_token, &email);
     }
     if form.password.len() < 8 {
-        return render_error(&state, "A senha deve ter pelo menos 8 caracteres.");
+        return render_error(&state, "A senha deve ter pelo menos 8 caracteres.", &csrf_token, &email);
     }
     if form.password != form.password_confirm {
-        return render_error(&state, "As senhas não coincidem.");
+        return render_error(&state, "As senhas não coincidem.", &csrf_token, &email);
     }
 
     // Verificar unicidade do e-mail
     match db::get_user_by_email(&state.pool, &email).await {
-        Ok(Some(_)) => return render_error(&state, "Este e-mail já está cadastrado."),
+        Ok(Some(_)) => {
+            // Exibe erro claro sem revelar se o e-mail pertence a outro usuário autenticado
+            return render_error(&state, "Este e-mail já está cadastrado. Faça login ou use outro e-mail.", &csrf_token, &email);
+        }
         Err(e) => {
             tracing::error!("register: DB error: {e}");
-            return render_error(&state, "Erro interno. Tente novamente.");
+            return render_error(&state, "Erro interno. Tente novamente.", &csrf_token, &email);
         }
         Ok(None) => {}
     }
@@ -154,11 +160,11 @@ pub async fn register(
         Ok(Ok(h)) => h,
         Ok(Err(e)) => {
             tracing::error!("register: argon2 hash error: {e}");
-            return render_error(&state, "Erro ao processar senha. Tente novamente.");
+            return render_error(&state, "Erro ao processar senha. Tente novamente.", &csrf_token, &email);
         }
         Err(e) => {
             tracing::error!("register: spawn_blocking error: {e}");
-            return render_error(&state, "Erro interno. Tente novamente.");
+            return render_error(&state, "Erro interno. Tente novamente.", &csrf_token, &email);
         }
     };
 
@@ -166,17 +172,17 @@ pub async fn register(
     let user = User::new(email.clone(), password_hash);
     if let Err(e) = db::insert_user(&state.pool, &user).await {
         tracing::error!("register: insert_user error: {e}");
-        return render_error(&state, "Erro ao criar conta. Tente novamente.");
+        return render_error(&state, "Erro ao criar conta. Tente novamente.", &csrf_token, &email);
     }
 
     // Persistir sessão e redirecionar
     if let Err(e) = session.insert(USER_ID_KEY, &user.id).await {
         tracing::error!("register: session insert user_id error: {e}");
-        return render_error(&state, "Erro interno. Tente novamente.");
+        return render_error(&state, "Erro interno. Tente novamente.", &csrf_token, &email);
     }
     if let Err(e) = session.insert(EMAIL_KEY, &user.email).await {
         tracing::error!("register: session insert email error: {e}");
-        return render_error(&state, "Erro interno. Tente novamente.");
+        return render_error(&state, "Erro interno. Tente novamente.", &csrf_token, &email);
     }
 
     tracing::info!("register: novo usuário criado: {}", email);
@@ -245,7 +251,10 @@ pub async fn login(
             .into_response();
     }
 
-    fn render_error(state: &AppState, email: &str, next: &str, msg: &str) -> axum::response::Response {
+    // Gera (ou reutiliza) o token CSRF para re-renderização de erros
+    let csrf_token = csrf::get_or_create_csrf_token(&session).await;
+
+    fn render_error(state: &AppState, email: &str, next: &str, msg: &str, csrf_token: &str) -> axum::response::Response {
         let html = state
             .tmpl
             .get_template("login.html")
@@ -254,6 +263,7 @@ pub async fn login(
                     error => msg,
                     email => email,
                     next  => next,
+                    csrf_token => csrf_token,
                 })
             })
             .unwrap_or_else(|e| format!("Template error: {e}"));
@@ -263,10 +273,10 @@ pub async fn login(
     // Buscar usuário pelo e-mail
     let user = match db::get_user_by_email(&state.pool, &email).await {
         Ok(Some(u)) => u,
-        Ok(None) => return render_error(&state, &email, &next, "E-mail ou senha incorretos."),
+        Ok(None) => return render_error(&state, &email, &next, "E-mail ou senha incorretos.", &csrf_token),
         Err(e) => {
             tracing::error!("login: DB error: {e}");
-            return render_error(&state, &email, &next, "Erro interno. Tente novamente.");
+            return render_error(&state, &email, &next, "Erro interno. Tente novamente.", &csrf_token);
         }
     };
 
@@ -282,17 +292,17 @@ pub async fn login(
     .unwrap_or(false);
 
     if !valid {
-        return render_error(&state, &email, &next, "E-mail ou senha incorretos.");
+        return render_error(&state, &email, &next, "E-mail ou senha incorretos.", &csrf_token);
     }
 
     // Persistir sessão
     if let Err(e) = session.insert(USER_ID_KEY, &user.id).await {
         tracing::error!("login: session insert user_id error: {e}");
-        return render_error(&state, &email, &next, "Erro interno. Tente novamente.");
+        return render_error(&state, &email, &next, "Erro interno. Tente novamente.", &csrf_token);
     }
     if let Err(e) = session.insert(EMAIL_KEY, &user.email).await {
         tracing::error!("login: session insert email error: {e}");
-        return render_error(&state, &email, &next, "Erro interno. Tente novamente.");
+        return render_error(&state, &email, &next, "Erro interno. Tente novamente.", &csrf_token);
     }
 
     tracing::info!("login: usuário autenticado: {}", email);
