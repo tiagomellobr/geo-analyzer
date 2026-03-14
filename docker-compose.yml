@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: geo-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: geoanalyzer
+      POSTGRES_PASSWORD: geoanalyzer
+      POSTGRES_DB: geoanalyzer
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geoanalyzer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
@@ -41,10 +59,8 @@ services:
     container_name: geo-analyzer
     ports:
       - "3000:3000"
-    volumes:
-      - geo_data:/data
     environment:
-      DATABASE_URL: "sqlite:///data/geo_analyzer.db"
+      DATABASE_URL: "postgres://geoanalyzer:geoanalyzer@postgres:5432/geoanalyzer"
       BIND: "0.0.0.0:3000"
       RUST_LOG: "geo_analyzer=info,tower_http=info"
       OLLAMA_HOST: "http://ollama:11434"
@@ -58,6 +74,8 @@ services:
       SMTP_NO_TLS: "true"
       APP_BASE_URL: "http://localhost:3000"
     depends_on:
+      postgres:
+        condition: service_healthy
       ollama:
         condition: service_healthy
       mailpit:
@@ -65,5 +83,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  geo_data:
+  postgres_data:
   ollama_data:

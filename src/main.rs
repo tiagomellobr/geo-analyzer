@@ -14,13 +14,13 @@ use axum::{
 };
 use minijinja::Environment;
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tower_http::trace::TraceLayer;
 use tower_sessions::{
     cookie::SameSite, Expiry, SessionManagerLayer,
 };
-use tower_sessions_sqlx_store::SqliteStore;
+use tower_sessions_sqlx_store::PostgresStore;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Evento de progresso enviado por SSE
@@ -35,7 +35,7 @@ pub struct StatusEvent {
 
 /// Estado compartilhado da aplicação
 pub struct AppState {
-    pub pool: SqlitePool,
+    pub pool: PgPool,
     pub tmpl: Environment<'static>,
     pub tx: broadcast::Sender<StatusEvent>,
     pub llm_client: analyzer::llm::LlmClient,
@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Banco de dados
     let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://geo_analyzer.db".to_string());
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://geoanalyzer:geoanalyzer@localhost:5432/geoanalyzer".to_string());
     let pool = db::create_pool(&database_url).await?;
 
     // Templates
@@ -83,8 +83,8 @@ async fn main() -> anyhow::Result<()> {
         llm_client,
     });
 
-    // Sessão persistente no SQLite (tower-sessions)
-    let session_store = SqliteStore::new(pool);
+    // Sessão persistente no PostgreSQL (tower-sessions)
+    let session_store = PostgresStore::new(pool);
     session_store.migrate().await?;
 
     // Limpar sessões expiradas a cada 1 h em background

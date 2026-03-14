@@ -1,58 +1,44 @@
 use anyhow::Result;
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
-    SqlitePool,
+    postgres::{PgConnectOptions, PgPoolOptions},
+    PgPool,
 };
 use std::str::FromStr;
 
 use crate::models::{Job, Page, User};
 
-pub async fn create_pool(database_url: &str) -> Result<SqlitePool> {
-    let opts = SqliteConnectOptions::from_str(database_url)?
-        .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Normal)
-        .busy_timeout(std::time::Duration::from_secs(10));
-    let pool = SqlitePoolOptions::new()
+pub async fn create_pool(database_url: &str) -> Result<PgPool> {
+    let opts = PgConnectOptions::from_str(database_url)?;
+    let pool = PgPoolOptions::new()
         .max_connections(5)
+        .acquire_timeout(std::time::Duration::from_secs(10))
         .connect_with(opts)
         .await?;
     run_migrations(&pool).await?;
     Ok(pool)
 }
 
-async fn run_migrations(pool: &SqlitePool) -> Result<()> {
-    sqlx::query(include_str!("../../migrations/001_initial.sql"))
+async fn run_migrations(pool: &PgPool) -> Result<()> {
+    sqlx::raw_sql(include_str!("../../migrations/001_initial.sql"))
         .execute(pool)
         .await?;
-    sqlx::query(include_str!("../../migrations/002_llm_cache.sql"))
+    sqlx::raw_sql(include_str!("../../migrations/002_llm_cache.sql"))
         .execute(pool)
         .await?;
-    // Migration 003 adiciona coluna que pode já existir em bancos anteriores;
-    // ignora o erro de coluna duplicada para ser idempotente.
-    if let Err(e) = sqlx::query(include_str!("../../migrations/003_llm_summary.sql"))
+    // Migration 003: ADD COLUMN IF NOT EXISTS — idempotente no PostgreSQL
+    sqlx::raw_sql(include_str!("../../migrations/003_llm_summary.sql"))
         .execute(pool)
-        .await
-    {
-        if !e.to_string().contains("duplicate column name") {
-            return Err(e.into());
-        }
-    }
+        .await?;
     // Migration 004: tabela users (idempotente via IF NOT EXISTS)
-    sqlx::query(include_str!("../../migrations/004_users.sql"))
+    sqlx::raw_sql(include_str!("../../migrations/004_users.sql"))
         .execute(pool)
         .await?;
-    // Migration 005: coluna user_id em jobs + índice (pode já existir em bancos anteriores)
-    if let Err(e) = sqlx::query(include_str!("../../migrations/005_jobs_user_fk.sql"))
+    // Migration 005: ADD COLUMN IF NOT EXISTS — idempotente no PostgreSQL
+    sqlx::raw_sql(include_str!("../../migrations/005_jobs_user_fk.sql"))
         .execute(pool)
-        .await
-    {
-        if !e.to_string().contains("duplicate column name") {
-            return Err(e.into());
-        }
-    }
+        .await?;
     // Migration 006: tabela password_reset_tokens (idempotente via IF NOT EXISTS)
-    sqlx::query(include_str!("../../migrations/006_reset_tokens.sql"))
+    sqlx::raw_sql(include_str!("../../migrations/006_reset_tokens.sql"))
         .execute(pool)
         .await?;
     Ok(())
@@ -60,10 +46,10 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 
 // ─── Jobs ────────────────────────────────────────────────────────────────────
 
-pub async fn insert_job(pool: &SqlitePool, job: &Job) -> Result<()> {
+pub async fn insert_job(pool: &PgPool, job: &Job) -> Result<()> {
     sqlx::query(
         "INSERT INTO jobs (id, user_id, site_url, status, total_pages, processed_pages, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&job.id)
     .bind(&job.user_id)
@@ -79,7 +65,7 @@ pub async fn insert_job(pool: &SqlitePool, job: &Job) -> Result<()> {
 }
 
 pub async fn update_job_status(
-    pool: &SqlitePool,
+    pool: &PgPool,
     id: &str,
     status: &str,
     total_pages: i64,
@@ -88,7 +74,7 @@ pub async fn update_job_status(
 ) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
-        "UPDATE jobs SET status=?, total_pages=?, processed_pages=?, updated_at=?, error_message=? WHERE id=?",
+        "UPDATE jobs SET status=$1, total_pages=$2, processed_pages=$3, updated_at=$4, error_message=$5 WHERE id=$6",
     )
     .bind(status)
     .bind(total_pages)
@@ -101,15 +87,15 @@ pub async fn update_job_status(
     Ok(())
 }
 
-pub async fn get_job(pool: &SqlitePool, id: &str) -> Result<Option<Job>> {
-    let job = sqlx::query_as::<_, Job>("SELECT * FROM jobs WHERE id = ?")
+pub async fn get_job(pool: &PgPool, id: &str) -> Result<Option<Job>> {
+    let job = sqlx::query_as::<_, Job>("SELECT * FROM jobs WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
         .await?;
     Ok(job)
 }
 
-pub async fn list_jobs(pool: &SqlitePool) -> Result<Vec<Job>> {
+pub async fn list_jobs(pool: &PgPool) -> Result<Vec<Job>> {
     let jobs =
         sqlx::query_as::<_, Job>("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 20")
             .fetch_all(pool)
@@ -119,7 +105,7 @@ pub async fn list_jobs(pool: &SqlitePool) -> Result<Vec<Job>> {
 
 // ─── Pages ───────────────────────────────────────────────────────────────────
 
-pub async fn insert_page(pool: &SqlitePool, page: &Page) -> Result<()> {
+pub async fn insert_page(pool: &PgPool, page: &Page) -> Result<()> {
     sqlx::query(
         "INSERT INTO pages (
             id, job_id, url, title, word_count,
@@ -129,7 +115,7 @@ pub async fn insert_page(pool: &SqlitePool, page: &Page) -> Result<()> {
             score_schema_markup, score_content_depth, geo_score,
             recommendations, meta_description, has_og_tags, has_schema_markup, analyzed_at,
             llm_summary
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)",
     )
     .bind(&page.id)
     .bind(&page.job_id)
@@ -159,9 +145,9 @@ pub async fn insert_page(pool: &SqlitePool, page: &Page) -> Result<()> {
     Ok(())
 }
 
-pub async fn get_pages_for_job(pool: &SqlitePool, job_id: &str) -> Result<Vec<Page>> {
+pub async fn get_pages_for_job(pool: &PgPool, job_id: &str) -> Result<Vec<Page>> {
     let pages = sqlx::query_as::<_, Page>(
-        "SELECT * FROM pages WHERE job_id = ? ORDER BY geo_score ASC",
+        "SELECT * FROM pages WHERE job_id = $1 ORDER BY geo_score ASC",
     )
     .bind(job_id)
     .fetch_all(pool)
@@ -169,16 +155,16 @@ pub async fn get_pages_for_job(pool: &SqlitePool, job_id: &str) -> Result<Vec<Pa
     Ok(pages)
 }
 
-pub async fn delete_job(pool: &SqlitePool, id: &str) -> Result<()> {
-    sqlx::query("DELETE FROM jobs WHERE id = ?")
+pub async fn delete_job(pool: &PgPool, id: &str) -> Result<()> {
+    sqlx::query("DELETE FROM jobs WHERE id = $1")
         .bind(id)
         .execute(pool)
         .await?;
     Ok(())
 }
 
-pub async fn get_page(pool: &SqlitePool, id: &str) -> Result<Option<Page>> {
-    let page = sqlx::query_as::<_, Page>("SELECT * FROM pages WHERE id = ?")
+pub async fn get_page(pool: &PgPool, id: &str) -> Result<Option<Page>> {
+    let page = sqlx::query_as::<_, Page>("SELECT * FROM pages WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
         .await?;
@@ -188,20 +174,20 @@ pub async fn get_page(pool: &SqlitePool, id: &str) -> Result<Option<Page>> {
 // ─── LLM Cache ───────────────────────────────────────────────────────────────
 
 pub async fn get_llm_cache(
-    pool: &SqlitePool,
+    pool: &PgPool,
     url: &str,
 ) -> Result<Option<crate::analyzer::llm::LlmAnalysis>> {
     use sqlx::Row;
     let row = sqlx::query(
         "SELECT fluency, authoritative_tone, technical_terms, easy_to_understand,
                 fluency_rec, auth_rec, tech_rec, easy_rec
-         FROM llm_cache WHERE url = ?",
+         FROM llm_cache WHERE url = $1",
     )
     .bind(url)
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|r: sqlx::sqlite::SqliteRow| crate::analyzer::llm::LlmAnalysis {
+    Ok(row.map(|r: sqlx::postgres::PgRow| crate::analyzer::llm::LlmAnalysis {
         fluency: r.get("fluency"),
         authoritative_tone: r.get("authoritative_tone"),
         technical_terms: r.get("technical_terms"),
@@ -214,7 +200,7 @@ pub async fn get_llm_cache(
 }
 
 pub async fn set_llm_cache(
-    pool: &SqlitePool,
+    pool: &PgPool,
     url: &str,
     analysis: &crate::analyzer::llm::LlmAnalysis,
 ) -> Result<()> {
@@ -223,17 +209,17 @@ pub async fn set_llm_cache(
         "INSERT INTO llm_cache
              (url, fluency, authoritative_tone, technical_terms, easy_to_understand,
               fluency_rec, auth_rec, tech_rec, easy_rec, cached_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT(url) DO UPDATE SET
-             fluency=excluded.fluency,
-             authoritative_tone=excluded.authoritative_tone,
-             technical_terms=excluded.technical_terms,
-             easy_to_understand=excluded.easy_to_understand,
-             fluency_rec=excluded.fluency_rec,
-             auth_rec=excluded.auth_rec,
-             tech_rec=excluded.tech_rec,
-             easy_rec=excluded.easy_rec,
-             cached_at=excluded.cached_at",
+             fluency=EXCLUDED.fluency,
+             authoritative_tone=EXCLUDED.authoritative_tone,
+             technical_terms=EXCLUDED.technical_terms,
+             easy_to_understand=EXCLUDED.easy_to_understand,
+             fluency_rec=EXCLUDED.fluency_rec,
+             auth_rec=EXCLUDED.auth_rec,
+             tech_rec=EXCLUDED.tech_rec,
+             easy_rec=EXCLUDED.easy_rec,
+             cached_at=EXCLUDED.cached_at",
     )
     .bind(url)
     .bind(analysis.fluency)
@@ -252,9 +238,9 @@ pub async fn set_llm_cache(
 
 // ─── Users ───────────────────────────────────────────────────────────────────
 
-pub async fn insert_user(pool: &SqlitePool, user: &User) -> Result<()> {
+pub async fn insert_user(pool: &PgPool, user: &User) -> Result<()> {
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO users (id, email, password_hash, created_at) VALUES ($1, $2, $3, $4)",
     )
     .bind(&user.id)
     .bind(&user.email)
@@ -265,25 +251,25 @@ pub async fn insert_user(pool: &SqlitePool, user: &User) -> Result<()> {
     Ok(())
 }
 
-pub async fn get_user_by_email(pool: &SqlitePool, email: &str) -> Result<Option<User>> {
-    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = ?")
+pub async fn get_user_by_email(pool: &PgPool, email: &str) -> Result<Option<User>> {
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1")
         .bind(email)
         .fetch_optional(pool)
         .await?;
     Ok(user)
 }
 
-pub async fn get_user_by_id(pool: &SqlitePool, id: &str) -> Result<Option<User>> {
-    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
+pub async fn get_user_by_id(pool: &PgPool, id: &str) -> Result<Option<User>> {
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
         .await?;
     Ok(user)
 }
 
-pub async fn list_jobs_for_user(pool: &SqlitePool, user_id: &str) -> Result<Vec<Job>> {
+pub async fn list_jobs_for_user(pool: &PgPool, user_id: &str) -> Result<Vec<Job>> {
     let jobs = sqlx::query_as::<_, Job>(
-        "SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT 20",
+        "SELECT * FROM jobs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20",
     )
     .bind(user_id)
     .fetch_all(pool)
@@ -291,8 +277,8 @@ pub async fn list_jobs_for_user(pool: &SqlitePool, user_id: &str) -> Result<Vec<
     Ok(jobs)
 }
 
-pub async fn update_user_password(pool: &SqlitePool, user_id: &str, password_hash: &str) -> Result<()> {
-    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+pub async fn update_user_password(pool: &PgPool, user_id: &str, password_hash: &str) -> Result<()> {
+    sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
         .bind(password_hash)
         .bind(user_id)
         .execute(pool)
@@ -302,14 +288,14 @@ pub async fn update_user_password(pool: &SqlitePool, user_id: &str, password_has
 
 // ─── Password Reset Tokens ────────────────────────────────────────────────────
 
-pub async fn create_reset_token(pool: &SqlitePool, user_id: &str, token: &str, expires_at: &str) -> Result<()> {
+pub async fn create_reset_token(pool: &PgPool, user_id: &str, token: &str, expires_at: &str) -> Result<()> {
     // Invalida tokens anteriores não utilizados do mesmo usuário
-    sqlx::query("UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0")
+    sqlx::query("UPDATE password_reset_tokens SET used = 1 WHERE user_id = $1 AND used = 0")
         .bind(user_id)
         .execute(pool)
         .await?;
     sqlx::query(
-        "INSERT INTO password_reset_tokens (token, user_id, expires_at, used) VALUES (?, ?, ?, 0)",
+        "INSERT INTO password_reset_tokens (token, user_id, expires_at, used) VALUES ($1, $2, $3, 0)",
     )
     .bind(token)
     .bind(user_id)
@@ -319,23 +305,23 @@ pub async fn create_reset_token(pool: &SqlitePool, user_id: &str, token: &str, e
     Ok(())
 }
 
-pub async fn get_reset_token(pool: &SqlitePool, token: &str) -> Result<Option<(String, String, bool)>> {
+pub async fn get_reset_token(pool: &PgPool, token: &str) -> Result<Option<(String, String, bool)>> {
     // Retorna (user_id, expires_at, used)
     let row = sqlx::query(
-        "SELECT user_id, expires_at, used FROM password_reset_tokens WHERE token = ?",
+        "SELECT user_id, expires_at, used FROM password_reset_tokens WHERE token = $1",
     )
     .bind(token)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|r: sqlx::sqlite::SqliteRow| {
+    Ok(row.map(|r: sqlx::postgres::PgRow| {
         use sqlx::Row;
         let used: i64 = r.get("used");
         (r.get("user_id"), r.get("expires_at"), used != 0)
     }))
 }
 
-pub async fn mark_reset_token_used(pool: &SqlitePool, token: &str) -> Result<()> {
-    sqlx::query("UPDATE password_reset_tokens SET used = 1 WHERE token = ?")
+pub async fn mark_reset_token_used(pool: &PgPool, token: &str) -> Result<()> {
+    sqlx::query("UPDATE password_reset_tokens SET used = 1 WHERE token = $1")
         .bind(token)
         .execute(pool)
         .await?;
